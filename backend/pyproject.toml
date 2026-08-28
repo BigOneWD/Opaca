@@ -1,0 +1,32 @@
+[project]
+name = "opaca"
+version = "0.1.0"
+description = "Opaca deterministic treasury core: broker cash, dated obligations, settlement-aware liquidity, TreasuryGuard policy, authority."
+requires-python = ">=3.9"
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+src = ["opaca", "tests"]
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # import sorting
+  "UP",  # pyupgrade
+  "B",   # bugbear
+  "SIM", # simplify
+]
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+files = ["opaca", "tests"]
+mypy_path = "."
