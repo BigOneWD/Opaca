@@ -3,7 +3,8 @@
 Spec reference: `docs/SPEC.md` §17. This file summarizes observations and names the
 corresponding sanitized evidence files under `spike/evidence/`.
 
-**Status: Phase −1A (read-only preflight) COMPLETE — 2026-08-28. No order has been submitted.**
+**Status: Phase −1A (read-only preflight) and Phase −1B (mutating experiments) COMPLETE —
+2026-08-28. All experiments paper-only, explicitly invoked, minimum practical sizes.**
 
 Credentials are supplied via shell environment (`APCA_API_KEY_ID` / `APCA_API_SECRET_KEY`,
 paper keys). They are never printed, logged, or serialized; no `.env` files exist in the repo.
@@ -165,18 +166,143 @@ Evidence: `spike/evidence/calendar_20260828T133740Z.json`
 
 1. **Demo balance**: RESOLVED by approved decision — actual $100,000 cash is the
    authoritative baseline; scenario seeded at frozen ratios; no manual reset dependency.
-2. Order behavior (market/limit/fractional/notional), `client_order_id` constraints and
-   duplicate behavior, lifecycle statuses, UNKNOWN recovery, and sell/settlement crediting
-   are all untested — Phase −1B, each behind an explicit subcommand and human approval.
-3. Settlement crediting behavior in paper (instant vs delayed) — Phase −1B sell experiment;
-   Opaca's derived schedule remains authoritative regardless (§5).
+2. Order behavior, `client_order_id` behavior, lifecycle statuses, UNKNOWN recovery, and
+   sell/settlement crediting — **completed in Phase −1B below**.
+3. Extended-hours live behavior — UNVERIFIED / NON-BLOCKING (see B8).
 
+
+## Phase −1B — Mutating experiments (2026-08-28, ~13:56–13:59 UTC, market OPEN)
+
+All experiments: explicitly invoked subcommands, minimum practical sizes, deterministic
+`client_order_id = sha256(opaca-spike:<experiment>:<run-id>:<leg>)[:32]`, pre/post state
+captured, single submission per leg (never auto-retried), long-only sells.
+
+Pre-state (snapshot before first mutation): `spike/evidence/snapshot_20260828T135604Z.json`
+— cash $100,000, no positions, no open orders.
+
+### B1 — Whole-share market buy
+
+Evidence: `spike/evidence/b1_market_buy_20260828T135616Z.json`
+
+* Request: BUY 1 SGOV, market, DAY, deterministic client_order_id.
+* Lifecycle observed: `new → filled` (no `accepted`/`pending_new` observed between polls).
+* Fill: qty 1 @ $100.70. Cash $100,000 → $99,899.30. Position SGOV 1 long reconciled.
+* Conclusion: whole-share market orders fill instantly during RTH; reconciliation gate passed.
+
+### B2 — Whole-share limit + cancel
+
+Evidence: `spike/evidence/b2_limit_cancel_20260828T135728Z.json`
+
+* Request: BUY 1 SGOV limit $50.35 (deliberately non-marketable, ~50% of last trade), DAY.
+* Open phase: status `new` (stable across polls). Cancel request → final status `canceled`.
+* Cash and positions unchanged after cancellation. Gate passed.
+* Conclusion: cancel lifecycle is clean; resting status observed is `new`.
+
+### B3 — Duplicate client_order_id
+
+Evidence: `spike/evidence/b3_duplicate_id_20260828T135751Z.json`
+
+* First submission accepted (non-marketable limit, deterministic ID).
+* Second submission with the **identical** client_order_id: REJECTED —
+  `APIError {"code":42210000,"message":"client_order_id must be unique"}`. No second order created.
+* Exactly one open order carried the ID; lookup by client_order_id returned the single order.
+* ID constraint probes (non-marketable limits, canceled immediately after acceptance):
+  client_order_id lengths **48, 49, 64, 128 all ACCEPTED**. No 48-char ceiling observed;
+  charset hex accepted. Our 32-char hex encoding satisfies the constraint with margin.
+* First order canceled at end; account unchanged.
+* Conclusion: broker enforces client_order_id uniqueness at submission — deterministic IDs
+  give broker-level duplicate prevention (CHECK-09 validated).
+
+### B4 — Fractional quantity
+
+Evidence: `spike/evidence/b4_fractional_20260828T135811Z.json`
+
+* Request: BUY 0.1 SGOV market DAY. Accepted; lifecycle `filled`; fill 0.1 @ $100.698.
+* Position became 1.1 (whole + fractional combined in one position).
+* Conclusion: fractional qty works with market/DAY; no separate order type needed.
+
+### B5 — Notional order
+
+Evidence: `spike/evidence/b5_notional_20260828T135824Z.json`
+
+* Probe $0.50: REJECTED — `notional amount must be >= 1.00` → **minimum notional is $1.00**.
+* Main $10: accepted; lifecycle `filled`; resulting qty 0.099207531 @ $100.698.
+* Position became 1.199207531. Market DAY is the accepted form.
+* Conclusion: notional orders work; enforce ≥ $1.00 and Opaca's own dust floor (CHECK-14).
+
+### B6 — UNKNOWN / crash recovery
+
+Evidence: `spike/evidence/b6_unknown_recovery_20260828T135843Z.json`
+
+* Non-marketable limit submitted once with deterministic ID; local order confirmation
+  discarded by design (simulated loss).
+* Recovery: bounded retry/backoff query by client_order_id → **found on attempt 1**.
+* Zero second submissions (by design and verified: single order for the ID).
+* Order canceled after evidence capture; account unchanged.
+* Conclusion: recovery by client_order_id works; UNKNOWN_REQUIRES_REVIEW path implemented
+  for the not-found branch (no auto-resubmission either way).
+
+### B7 — Settlement sell / cleanup
+
+Evidence: `spike/evidence/b7_settlement_sell_20260828T135900Z.json`
+
+* Pre-state: SGOV 1.199207531 long (reconciled), cash $99,879.24.
+* Sold exactly the reconciled long quantity (CHECK-16 compliant: long-only, no short created).
+* Lifecycle `new → filled` @ $100.69. Position flat.
+* Cash behavior: credited to $99,999.99 **immediately at terminal status**; unchanged +5s;
+  no separate settled/unsettled/transferable fields exposed by the paper account API.
+* Conclusion: **Alpaca paper trading credits sale proceeds instantly** — unrealistically vs
+  real T+1 settlement. Per §5 (Amendment B), Opaca derives T+1 availability from its own
+  business-day calendar over reconciled fills and does NOT treat broker crediting as
+  legal/operational settlement. CHECK-12 must evaluate the derived schedule.
+
+### B8 — Extended hours
+
+Evidence: `spike/evidence/b8_extended_hours_20260828T135928Z.json`
+
+* Asset attributes confirmed: `fractional_eh_enabled`, `overnight_tradable` (all three ETFs);
+  order request models expose an `extended_hours` field; EH semantics require limit orders.
+* No live outside-RTH order placed (market open during spike; not worth hackathon time).
+* Status: **UNVERIFIED / NON-BLOCKING**. Opaca default: submit during RTH only.
+
+### Phase −1B status ledger (observed Alpaca order statuses)
+
+Observed across B1–B7: `new`, `filled`, `canceled`. Not observed in this spike:
+`accepted`, `pending_new`, `partially_filled`, `rejected` (order-level), `expired`,
+`done_for_day`, `held`. §13 mapping table must map the full documented set; unmapped
+statuses fail closed to UNKNOWN.
+
+### Account mechanics learned during B1–B7
+
+* While holding marginable SGOV: `initial_margin`/`maintenance_margin` become non-zero and
+  `non_marginable_buying_power = cash + loan value of positions` (exceeded cash by $50.34).
+* Implication: **no broker buying-power field equals corporate cash once positions exist.**
+  Opaca funding must be computed from reconciled broker cash itself (CHECK-06), never from
+  any `*buying_power` field.
+* Paper run-of-show net effect: cash $100,000 → $99,999.99 (1¢ spread loss across buys/sells).
 
 ## Evidence files
+
+Phase −1A:
 
 ```text
 spike/evidence/account_20260828T133609Z.json
 spike/evidence/assets_20260828T133619Z.json
 spike/evidence/clock_20260828T133628Z.json
 spike/evidence/calendar_20260828T133740Z.json
+```
+
+Phase −1B:
+
+```text
+spike/evidence/snapshot_20260828T135604Z.json   (pre-mutation state)
+spike/evidence/b1_market_buy_20260828T135616Z.json
+spike/evidence/b2_limit_cancel_20260828T135728Z.json
+spike/evidence/b3_duplicate_id_20260828T135751Z.json
+spike/evidence/b4_fractional_20260828T135811Z.json
+spike/evidence/b5_notional_20260828T135824Z.json
+spike/evidence/b6_unknown_recovery_20260828T135843Z.json
+spike/evidence/b7_settlement_sell_20260828T135900Z.json
+spike/evidence/b8_extended_hours_20260828T135928Z.json
+spike/evidence/snapshot_20260828T135930Z.json   (final state)
 ```
