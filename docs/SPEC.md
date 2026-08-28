@@ -3,7 +3,7 @@
 ## Autonomous Corporate Cash Agent powered by Alpaca
 
 
-**Status:** FROZEN FOR BUILD — AMENDED (Amendments A–D applied)
+**Status:** FROZEN FOR BUILD — AMENDED (Amendments A–F applied)
 **Supersedes:** Opaca v0.1 / TreasuryGuard initial spec
 **Build window:** 28 August–4 September 2026
 **Implementation starts:** Hackathon kickoff, subject to final official rules
@@ -11,7 +11,8 @@
 
 ---
 
-## Amendment Log (2026-08-25, approved pre-build)
+## Amendment Log (A–D approved 2026-08-25 pre-build; E–F approved 2026-08-28 at kickoff)
+
 
 | ID | Subject | Sections touched |
 | -- | ------- | ---------------- |
@@ -19,11 +20,27 @@
 | B | Settlement is an Opaca-derived liquidity model | §5, §9 (CHECK-12), §17, §21 |
 | C | LLM contract and failure behavior | §7, §11, §20, §21 |
 | D | Define target_weight exactly | §7, §8, §21 |
+| E | Optional read-only Alpaca MCP context lane | §14, §17, §18, §21 |
+| F | Alpaca CLI operational runbook (external tool only) | §14, §17, §18, §21 |
 | — | Smaller clarifications | §4, §5, §9, §10, §13, §15, §17 |
 | — | UNKNOWN recovery correction | §13, §20, §21 |
 
-All amendments preserve the existing architecture and the Freeze Rule (§23).
 
+### Amendment E
+
+
+Optional read-only Alpaca MCP context lane, feature-flagged, disabled by default,
+post-core only, no write tools, advisory context only.
+
+
+### Amendment F
+
+
+Alpaca CLI is an external operations/fault-injection tool only and is never invoked
+by Opaca runtime.
+
+
+All amendments preserve the existing architecture and the Freeze Rule (§23).
 
 ---
 
@@ -960,21 +977,111 @@ Responsibilities:
 * reconciliation
 
 
-## MCP
+## Explicit Non-Goals (Amendments E & F)
 
 
-Optional enhancement only.
+Opaca will NOT add:
 
 
-MCP must **not** be on the execution-critical path for v1.
+* MCP order submission
+* MCP order replacement/cancellation
+* MCP reconciliation
+* MCP write tools of any kind
+* CLI invocation from runtime
+* CLI as fallback broker integration
+* a second broker source of truth
+* a second account-state source of truth
+* a second market-data provider
+* a multi-agent supervisor/debate architecture
+* a second LLM agent for risk
+* live trading
+* crypto
+* another broker
+* Opaca exposed as its own MCP server during this hackathon
 
 
-Possible later use:
+## MCP Context Lane — OPTIONAL / POST-CORE (Amendment E)
 
 
-* read-only agent tool,
-* market/context discovery,
-* visible hackathon integration.
+> **Invariant: `MCP informs. alpaca-py adjudicates. TreasuryGuard enforces.`**
+
+
+Opaca MAY use Alpaca MCP **only** for pre-proposal context gathering. It is governed by:
+
+
+1. The lane is controlled by a feature flag:
+
+
+   ```text
+   MCP_CONTEXT_LANE=true|false
+   ```
+
+
+2. Default value: `false`.
+3. Only **read-capable** MCP tools may be registered.
+4. **Write-capable MCP tools MUST NOT be registered at all.** This includes any MCP tool
+   that can submit orders, replace orders, cancel orders, or modify broker/account state.
+5. MCP-derived data is **advisory input to the LLM proposal only.**
+6. MCP-derived data MUST NOT:
+
+
+   * become authoritative ledger state,
+   * become reconciliation state,
+   * determine execution authority,
+   * bypass TreasuryGuard,
+   * replace authoritative `alpaca-py` reads.
+7. Before TreasuryGuard validates any proposal, authoritative broker state must be fetched
+   again through the normal `alpaca-py` / Trading API path.
+8. If MCP context disagrees with authoritative `alpaca-py` state: reject the proposal,
+   log the discrepancy, require a fresh proposal.
+9. If MCP times out, fails, is unavailable, or returns invalid/unusable data, Opaca must
+   continue using the existing direct `alpaca-py` path. **MCP failure must never block
+   core operation.**
+10. If MCP is enabled, the complete MCP tool-call transcript is preserved as proposal
+    provenance in the audit trail (`audit_events`, §15): tool name, sanitized arguments,
+    timestamp, sanitized result, and correlation/proposal ID where available.
+11. MCP implementation is **POST-CORE only.** Do not implement MCP until:
+
+
+    * the core end-to-end Opaca flow is green,
+    * broker execution and reconciliation are stable,
+    * the hero liquidity-shock scenario works,
+    * the demo can be repeated reliably.
+12. MCP implementation is time-boxed to a maximum of **half a day**.
+13. If MCP reduces reliability or threatens the submission timeline, remove/disable it.
+14. MCP must never appear on:
+
+
+    * the order submission path,
+    * the order management path,
+    * the reconciliation path,
+    * the approval path,
+    * the settlement calculation path.
+
+
+## Alpaca CLI Operational Runbook (Amendment F)
+
+
+> **Invariant: `CLI perturbs or inspects. Opaca detects. CLI never executes on behalf of Opaca.`**
+
+
+1. The Alpaca CLI is **NOT** an Opaca runtime component.
+2. Opaca code must **never** invoke the Alpaca CLI.
+3. The CLI must not appear in: application imports, runtime subprocess calls, broker
+   gateway logic, the policy engine, reconciliation logic, or the agent execution flow.
+4. The CLI may be used manually for: paper-account inspection, operational diagnostics,
+   pre-demo fixture setup while Opaca is stopped, and controlled out-of-band paper-account
+   perturbation.
+5. Recommended demo/testing use: use the Alpaca CLI manually to change paper-account state
+   outside Opaca — e.g. place or alter a paper position externally, then restart/resume
+   Opaca; Opaca reconciles against Alpaca, detects the unexpected broker-state drift, and
+   surfaces the discrepancy.
+6. The CLI acts as: a fault injector, an operator diagnostic tool, and a reconciliation
+   test instrument.
+7. It is NOT: a second execution interface, an Opaca dependency, a fallback order path, or
+   part of production runtime architecture.
+8. Reconciliation remains based on authoritative Alpaca API state, not CLI output.
+9. If the CLI is unavailable, no core Opaca feature is impaired.
 
 
 There must never be two conflicting sources of broker truth.
@@ -1104,6 +1211,12 @@ This is the **first coding work after the hackathon officially begins**.
 
 
 Do not build the product until this passes.
+
+
+Scope note: Phase −1 is based entirely on the Alpaca paper Trading API via `alpaca-py`.
+MCP is out of scope for Phase −1 (§14, Amendment E); the Alpaca CLI is operator tooling
+only and is never invoked by spike scripts (§14, Amendment F). Basic MCP/CLI availability
+may optionally be noted later, but is never a gate.
 
 
 ## Questions to answer experimentally
@@ -1318,6 +1431,11 @@ Video recording
 
 
 Day 7 is backup/submission/QC.
+
+
+MCP (§14, Amendment E) is deliberately **not** a build-order phase. It may be attempted only
+after the hero flow and demo repeatability are green (i.e. after Phase 9), time-boxed to
+half a day, and removed if it threatens reliability or the submission timeline.
 
 
 ---
@@ -1648,6 +1766,7 @@ Opaca is not complete until all are true:
 * [ ] Liquidity restoration is mathematically defensible.
 * [ ] Audit trail captures complete lifecycle, including LLM failures.
 * [ ] Named policy defaults seeded in the `policies` table.
+* [ ] No MCP write tools registered, MCP context lane disabled by default, and no runtime Alpaca CLI invocation anywhere in the codebase (Amendments E, F).
 * [ ] Demo can be restored reliably to a **documented known broker state**, and Opaca **verifies that state** before proceeding (Amendment A).
 * [ ] Full demo can be repeated without developer intervention (any manual broker reset prerequisite is a documented one-time pre-demo step).
 * [ ] Submission video recorded by Day 6.
