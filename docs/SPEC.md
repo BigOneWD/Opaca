@@ -24,6 +24,7 @@
 | F | Alpaca CLI operational runbook (external tool only) | §14, §17, §18, §21 |
 | — | Smaller clarifications | §4, §5, §9, §10, §13, §15, §17 |
 | — | UNKNOWN recovery correction | §13, §20, §21 |
+| — | CHECK-16 no short positions (evidence-driven, Phase −1A: `shorting_enabled: true` observed) | §9, §21 |
 
 
 ### Amendment E
@@ -709,6 +710,22 @@ Optional depending on broker spike result.
 
 
 Avoid new autonomous trades during a configurable pre-close window if execution quality becomes unreliable.
+
+
+---
+
+
+## CHECK-16 — No Short Positions
+
+
+Opaca is **long-only**.
+
+
+* A projected post-trade position must never be negative.
+* A sell quantity/notional may never exceed the reconciled long position available for
+  liquidation.
+* Broker capability to short (Phase −1A observed `shorting_enabled: true` on the paper
+  account) must **never** be interpreted as policy permission.
 
 
 ---
@@ -1767,6 +1784,7 @@ Opaca is not complete until all are true:
 * [ ] Audit trail captures complete lifecycle, including LLM failures.
 * [ ] Named policy defaults seeded in the `policies` table.
 * [ ] No MCP write tools registered, MCP context lane disabled by default, and no runtime Alpaca CLI invocation anywhere in the codebase (Amendments E, F).
+* [ ] Long-only enforced (CHECK-16): no sell may exceed the reconciled long position; no projected post-trade position may be negative.
 * [ ] Demo can be restored reliably to a **documented known broker state**, and Opaca **verifies that state** before proceeding (Amendment A).
 * [ ] Full demo can be repeated without developer intervention (any manual broker reset prerequisite is a documented one-time pre-demo step).
 * [ ] Submission video recorded by Day 6.

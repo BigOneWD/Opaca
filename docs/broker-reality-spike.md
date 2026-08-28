@@ -60,6 +60,20 @@ Evidence: `spike/evidence/account_20260828T133609Z.json`
   configure or reset paper cash.
 * No reset or balance-setting call was made.
 
+**Approved decision (2026-08-28, human review):** the authoritative demo baseline is the
+**actual Alpaca paper cash — $100,000**. Opaca does NOT require or depend on a manual
+$500,000 broker reset. The demo scenario is seeded from opening broker cash using the frozen
+ratios, converted to absolute amounts once at scenario initialization:
+
+| Item | Ratio | Amount at $100,000 baseline |
+| ---- | ----- | --------------------------- |
+| payroll | 24% | $24,000 |
+| suppliers | 14% | $14,000 |
+| minimum operating reserve | 40% | $40,000 |
+| initial investable surplus | 22% | $22,000 |
+
+Manual $500,000 setup may be revisited only as optional final-demo polish.
+
 ### Architectural implications
 
 1. **CHECK-06 is essential, empirically**: `buying_power` ($400k) is 4× actual corporate cash.
@@ -68,13 +82,13 @@ Evidence: `spike/evidence/account_20260828T133609Z.json`
 2. **CHECK-11 is essential, empirically**: the paper account is margin-enabled
    (`multiplier: 4`, `shorting_enabled: true`). Opaca must constrain itself so no order can
    consume margin; account capability exceeds Opaca's permitted universe.
-3. **Account capability exceeds policy universe**: crypto ACTIVE and options level 3 are
+3. **CHECK-16 added (evidence-driven)**: because the account permits shorting
+   (`shorting_enabled: true`), broker capability must never be read as policy permission.
+   Opaca is long-only; see `docs/SPEC.md` §9 CHECK-16.
+4. **Account capability exceeds policy universe**: crypto ACTIVE and options level 3 are
    enabled at the account level — §6 whitelist / CHECK-03 is the enforcement point.
-4. **Amendment A triggered**: $500,000 is not the account baseline and cannot be set via API.
-   Options: (a) documented manual dashboard reset/configure to $500,000 as a one-time
-   pre-demo step (capability not yet verified — dashboard access is out of band for this
-   spike), or (b) scale the scenario deterministically from the actual $100,000 cash base,
-   preserving §4 ratios (payroll 24%, suppliers 14%, reserve 40%, investable 22%).
+5. **Amendment A resolved by decision**: the $100,000 actual cash is the scenario base;
+   obligations/reserve seeded deterministically at the frozen ratios (see table above).
 
 
 ## A2 — Assets (observed 2026-08-28T13:36Z)
@@ -149,9 +163,8 @@ Evidence: `spike/evidence/calendar_20260828T133740Z.json`
 
 ## Unresolved items (carried into Phase −1B / demo setup)
 
-1. **Demo balance**: $500,000 not established; API offers no reset path. Decide between
-   documented manual dashboard configuration (one-time pre-demo step) and Amendment A
-   scaling from $100,000. Dashboard capability is out of band and unverified.
+1. **Demo balance**: RESOLVED by approved decision — actual $100,000 cash is the
+   authoritative baseline; scenario seeded at frozen ratios; no manual reset dependency.
 2. Order behavior (market/limit/fractional/notional), `client_order_id` constraints and
    duplicate behavior, lifecycle statuses, UNKNOWN recovery, and sell/settlement crediting
    are all untested — Phase −1B, each behind an explicit subcommand and human approval.
