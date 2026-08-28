@@ -1,0 +1,35 @@
+{
+  "experiment": "clock",
+  "generated_at_utc": "2026-08-28T13:36:28+00:00",
+  "environment": {
+    "endpoint": "https://paper-api.alpaca.markets",
+    "mode": "paper"
+  },
+  "observations": {
+    "clock_fields": {
+      "timestamp": "2026-08-28 09:36:27.913840-04:00",
+      "is_open": true,
+      "next_open": "2026-08-31 09:30:00-04:00",
+      "next_close": "2026-08-28 16:00:00-04:00"
+    },
+    "broker_times": {
+      "timestamp": {
+        "raw": "2026-08-28 09:36:27.913840-04:00",
+        "utc": "2026-08-28T09:36:27.913840-04:00",
+        "singapore": "2026-08-28T21:36:27.913840+08:00"
+      },
+      "next_open": {
+        "raw": "2026-08-31 09:30:00-04:00",
+        "utc": "2026-08-31T09:30:00-04:00",
+        "singapore": "2026-08-31T21:30:00+08:00"
+      },
+      "next_close": {
+        "raw": "2026-08-28 16:00:00-04:00",
+        "utc": "2026-08-28T16:00:00-04:00",
+        "singapore": "2026-08-29T04:00:00+08:00"
+      }
+    },
+    "is_open": true,
+    "note": "raw broker timestamps preserved; SGT shown for human reading only"
+  }
+}
