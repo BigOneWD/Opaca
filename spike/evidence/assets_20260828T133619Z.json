@@ -1,0 +1,119 @@
+{
+  "experiment": "assets",
+  "generated_at_utc": "2026-08-28T13:36:19+00:00",
+  "environment": {
+    "endpoint": "https://paper-api.alpaca.markets",
+    "mode": "paper"
+  },
+  "observations": {
+    "universe": [
+      "SGOV",
+      "BIL",
+      "SHV"
+    ],
+    "assets": {
+      "SGOV": {
+        "error": null,
+        "fields": {
+          "asset_class": "us_equity",
+          "exchange": "NYSE",
+          "symbol": "SGOV",
+          "name": "iShares 0-3 Month Treasury Bond ETF",
+          "status": "active",
+          "tradable": true,
+          "marginable": true,
+          "shortable": true,
+          "easy_to_borrow": true,
+          "fractionable": true,
+          "min_order_size": null,
+          "min_trade_increment": null,
+          "price_increment": null,
+          "maintenance_margin_requirement": 30.0,
+          "attributes": [
+            "fractional_eh_enabled",
+            "has_options",
+            "overnight_tradable"
+          ]
+        },
+        "tradability": {
+          "status": "active",
+          "tradable": true,
+          "fractionable": true,
+          "marginable": true,
+          "shortable": true,
+          "easy_to_borrow": true,
+          "exchange": "NYSE",
+          "asset_class": null
+        }
+      },
+      "BIL": {
+        "error": null,
+        "fields": {
+          "asset_class": "us_equity",
+          "exchange": "ARCA",
+          "symbol": "BIL",
+          "name": "State Street SPDR Bloomberg 1-3 Month T-Bill ETF",
+          "status": "active",
+          "tradable": true,
+          "marginable": true,
+          "shortable": true,
+          "easy_to_borrow": true,
+          "fractionable": true,
+          "min_order_size": null,
+          "min_trade_increment": null,
+          "price_increment": null,
+          "maintenance_margin_requirement": 30.0,
+          "attributes": [
+            "fractional_eh_enabled",
+            "has_options",
+            "overnight_tradable"
+          ]
+        },
+        "tradability": {
+          "status": "active",
+          "tradable": true,
+          "fractionable": true,
+          "marginable": true,
+          "shortable": true,
+          "easy_to_borrow": true,
+          "exchange": "ARCA",
+          "asset_class": null
+        }
+      },
+      "SHV": {
+        "error": null,
+        "fields": {
+          "asset_class": "us_equity",
+          "exchange": "NYSE",
+          "symbol": "SHV",
+          "name": "iShares Trust iShares 0-1 Year Treasury Bond ETF",
+          "status": "active",
+          "tradable": true,
+          "marginable": true,
+          "shortable": true,
+          "easy_to_borrow": true,
+          "fractionable": true,
+          "min_order_size": null,
+          "min_trade_increment": null,
+          "price_increment": null,
+          "maintenance_margin_requirement": 30.0,
+          "attributes": [
+            "fractional_eh_enabled",
+            "has_options",
+            "overnight_tradable"
+          ]
+        },
+        "tradability": {
+          "status": "active",
+          "tradable": true,
+          "fractionable": true,
+          "marginable": true,
+          "shortable": true,
+          "easy_to_borrow": true,
+          "exchange": "NYSE",
+          "asset_class": null
+        }
+      }
+    }
+  }
+}

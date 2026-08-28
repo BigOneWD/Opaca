@@ -1,0 +1,59 @@
+{
+  "experiment": "account",
+  "generated_at_utc": "2026-08-28T13:36:09+00:00",
+  "environment": {
+    "endpoint": "https://paper-api.alpaca.markets",
+    "mode": "paper"
+  },
+  "observations": {
+    "account_fields": {
+      "status": "ACTIVE",
+      "crypto_status": "ACTIVE",
+      "currency": "USD",
+      "buying_power": "400000",
+      "regt_buying_power": "200000",
+      "daytrading_buying_power": null,
+      "non_marginable_buying_power": "100000",
+      "cash": "100000",
+      "accrued_fees": "0",
+      "pending_transfer_out": null,
+      "pending_transfer_in": null,
+      "portfolio_value": "100000",
+      "pattern_day_trader": null,
+      "trading_blocked": false,
+      "transfers_blocked": false,
+      "account_blocked": false,
+      "created_at": "2026-05-05 01:40:51.222638+00:00",
+      "trade_suspended_by_user": false,
+      "multiplier": "4",
+      "shorting_enabled": true,
+      "equity": "100000",
+      "last_equity": "100000",
+      "long_market_value": "0",
+      "short_market_value": "0",
+      "initial_margin": "0",
+      "maintenance_margin": "0",
+      "last_maintenance_margin": "0",
+      "sma": "100000",
+      "daytrade_count": null,
+      "options_buying_power": "100000",
+      "options_approved_level": 3,
+      "options_trading_level": 3
+    },
+    "cash_vs_buying_power": {
+      "cash": 100000.0,
+      "buying_power": 400000.0,
+      "non_marginable_buying_power": 100000.0,
+      "buying_power_minus_cash": 300000.0,
+      "cash_minus_non_marginable": 0.0,
+      "note": "buying_power must NOT be treated as usable Opaca corporate cash; non_marginable_buying_power is the closest conservative proxy"
+    },
+    "demo_baseline_probe": {
+      "observed_cash": 100000.0,
+      "observed_equity": "100000",
+      "target_paper_balance": 500000,
+      "reset_related_client_methods": [],
+      "note": "read-only probe of the Trading API surface only; no reset or balance-setting call was made"
+    }
+  }
+}

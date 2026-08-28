@@ -1,0 +1,49 @@
+{
+  "experiment": "b8_extended_hours",
+  "generated_at_utc": "2026-08-28T13:59:28+00:00",
+  "environment": {
+    "endpoint": "https://paper-api.alpaca.markets",
+    "mode": "paper"
+  },
+  "observations": {
+    "run_id": "20260828-r1",
+    "asset_flags": {
+      "SGOV": {
+        "attributes": [
+          "fractional_eh_enabled",
+          "has_options",
+          "overnight_tradable"
+        ],
+        "fractionable": true,
+        "tradable": true
+      },
+      "BIL": {
+        "attributes": [
+          "fractional_eh_enabled",
+          "has_options",
+          "overnight_tradable"
+        ],
+        "fractionable": true,
+        "tradable": true
+      },
+      "SHV": {
+        "attributes": [
+          "fractional_eh_enabled",
+          "has_options",
+          "overnight_tradable"
+        ],
+        "fractionable": true,
+        "tradable": true
+      }
+    },
+    "request_model_support": {
+      "extended_hours_field_present": true,
+      "note": "extended-hours orders require limit type per Alpaca semantics; verify empirically before use"
+    },
+    "market_state_at_check": {
+      "is_open": true
+    },
+    "status": "UNVERIFIED / NON-BLOCKING",
+    "conclusion": "outside-RTH live test not possible while market is open; asset attributes and request semantics recorded; treat extended hours as unverified and non-blocking"
+  }
+}

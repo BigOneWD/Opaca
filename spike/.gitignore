@@ -1,0 +1,18 @@
+# Secrets and local environment material — never commit
+.env
+.env.*
+*.env
+.venv/
+venv/
+
+# Caches, logs, test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+*.log
+
+# Unsanitized raw captures (spike/evidence/*.json is sanitized at write time and tracked)
+raw/
+*.raw.json
+*.raw.txt
