@@ -69,20 +69,27 @@ def test_quantity_available_below_quantity_is_the_binding_limit():
 
 # ---------------------------------------------------------------- cross-proposal
 
-def test_unresolved_prior_sell_plus_proposed_sell_is_NOT_aggregated():
-    """ATTACK: a prior SELL is still live at the broker in UNKNOWN state, so
-    the broker has not yet reserved the shares and quantity_available still
-    reads the full position. A second full-position SELL is proposed."""
-    unresolved = UnresolvedOrder(
+def test_unresolved_prior_sell_plus_proposed_sell_is_now_aggregated():
+    """RT-01 FIXED. A prior SELL still live at the broker now reserves its
+    remaining quantity, so a second full-position SELL is rejected. An
+    UNKNOWN order with no recoverable size fails closed entirely."""
+    sized = UnresolvedOrder(
+        proposal_id="prior", symbol="SGOV", side=Side.SELL,
+        client_order_id="opaca-deadbeef", state=OrderState.UNKNOWN,
+        quantity=Decimal("100"), filled_quantity=Decimal("0"),
+    )
+    ctx = make_context(investment_policy=NO_CONC, positions=(POS,), unresolved_orders=(sized,))
+    d = evaluate(_sell("p8", [("SGOV", "100")]), ctx)
+    assert not d.result_for(CheckId.CHECK_16).passed
+    assert not d.passed
+
+    unsized = UnresolvedOrder(
         proposal_id="prior", symbol="SGOV", side=Side.SELL,
         client_order_id="opaca-deadbeef", state=OrderState.UNKNOWN,
     )
-    ctx = make_context(investment_policy=NO_CONC, positions=(POS,), unresolved_orders=(unresolved,))
-    d = evaluate(_sell("p8", [("SGOV", "100")]), ctx)
-    # CHECK-10 only looks for OPPOSING sides, so a same-side sell is invisible
-    assert d.result_for(CheckId.CHECK_10).passed
-    assert d.result_for(CheckId.CHECK_16).passed
-    assert d.passed, "documents the uncovered cross-proposal invariant"
+    ctx2 = make_context(investment_policy=NO_CONC, positions=(POS,), unresolved_orders=(unsized,))
+    r = evaluate(_sell("p8b", [("SGOV", "1")]), ctx2).result_for(CheckId.CHECK_16)
+    assert not r.passed and "undeterminable" in r.detail
 
 
 def test_unresolved_prior_buy_opposing_is_caught():
@@ -96,12 +103,17 @@ def test_unresolved_prior_buy_opposing_is_caught():
     assert not d.result_for(CheckId.CHECK_10).passed
 
 
-def test_two_concurrent_proposals_each_safe_alone_aggregate_oversells():
-    """ATTACK: two logically concurrent proposals, each evaluated against the
-    same reconciled snapshot, each <= position, together > position."""
+def test_two_concurrent_proposals_against_one_snapshot_remain_an_orchestration_gap():
+    """Still true after RT-01, and correctly documented as such: a stateless
+    engine cannot serialise two simultaneous callers. The execution layer
+    must do evaluate -> reserve -> persist atomically."""
+    import opaca.policy.engine as engine_mod
     ctx = make_context(investment_policy=NO_CONC, positions=(POS,))
     a = evaluate(_sell("pa", [("SGOV", "60")]), ctx)
     b = evaluate(_sell("pb", [("SGOV", "60")]), ctx)
     assert a.result_for(CheckId.CHECK_16).passed
     assert b.result_for(CheckId.CHECK_16).passed
-    assert a.passed and b.passed, "no cross-proposal reservation exists in this phase"
+    doc = engine_mod.__doc__ or ""
+    assert "ATOMIC" in doc and "single-writer" in doc, "gap must stay documented"
+
+

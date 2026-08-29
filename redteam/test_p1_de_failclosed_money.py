@@ -138,44 +138,36 @@ def test_negative_zero_is_accepted_as_zero():
     assert p.quantity == Decimal("0")
 
 
-def test_very_large_values_raise_undeclared_InvalidOperation_not_MoneyError():
-    """ATTACK: constructors accept magnitudes the rounding layer cannot
-    quantize. money() maps InvalidOperation -> MoneyError, but the
-    .quantize() inside round_money/round_budget/round_quantity is unguarded,
-    so an out-of-range magnitude escapes as decimal.InvalidOperation, an
-    ArithmeticError that is NOT a ValueError/MoneyError."""
+def test_very_large_values_now_raise_MoneyError_at_the_boundary():
+    """RT-05 FIXED. MAGNITUDE_LIMIT rejects out-of-range magnitudes in
+    money(), and every quantize() is wrapped so a raw InvalidOperation can
+    never escape a public rounding function."""
     from decimal import InvalidOperation
-    from opaca.domain.money import round_budget
-    assert not issubclass(InvalidOperation, ValueError)
+    from opaca.domain.money import MAGNITUDE_LIMIT, round_budget
 
-    # 26 significant digits still quantizes; 27 does not
-    round_budget(Decimal("9" * 26))
-    with pytest.raises(InvalidOperation):
-        round_budget(Decimal("9" * 27))
-
-    # the model layer HAPPILY accepts the value that the rounding layer cannot take
-    big = Decimal("9" * 30)
-    assert BrokerCashState(big, Decimal("0"), Decimal("0"),
-                           Decimal("1"), DEFAULT_NOW).cash == big
-
-    # an LLM-supplied leg quantity >= 1e19 crashes ProposedOrder construction
-    # with the undeclared type rather than rejecting cleanly
-    with pytest.raises(InvalidOperation):
-        ProposedOrder("big", 0, "SGOV", Side.BUY, Decimal("1" + "0" * 19),
+    money(MAGNITUDE_LIMIT - Decimal("1"))
+    for bad in (MAGNITUDE_LIMIT, Decimal("9") * MAGNITUDE_LIMIT, -MAGNITUDE_LIMIT):
+        with pytest.raises(MoneyError):
+            money(bad)
+    with pytest.raises(MoneyError):
+        round_budget(Decimal("9") * MAGNITUDE_LIMIT)
+    with pytest.raises(MoneyError):
+        BrokerCashState(Decimal("1e30"), Decimal("0"), Decimal("0"),
+                        Decimal("1"), DEFAULT_NOW)
+    with pytest.raises(MoneyError):
+        ProposedOrder("big", 0, "SGOV", Side.BUY, Decimal("1e19"),
                       Decimal("100.69"), "opaca-x")
     try:
-        ProposedOrder("big", 0, "SGOV", Side.BUY, Decimal("1" + "0" * 19),
-                      Decimal("100.69"), "opaca-x")
+        money(Decimal("1e30"))
     except Exception as exc:
-        assert not isinstance(exc, MoneyError)
-        assert not isinstance(exc, ValueError)
+        assert isinstance(exc, ValueError)
+        assert not isinstance(exc, InvalidOperation)
 
 
-def test_seed_scenario_also_raises_InvalidOperation_on_huge_opening_cash():
-    from decimal import InvalidOperation
+def test_seed_scenario_now_raises_MoneyError_on_huge_opening_cash():
     from opaca.treasury.scenario import seed_scenario
-    with pytest.raises(InvalidOperation):
-        seed_scenario(Decimal("9" * 30), date(2026, 9, 1))
+    with pytest.raises(MoneyError):
+        seed_scenario(Decimal("1e30"), date(2026, 9, 1))
 
 
 def test_quantity_precision_rounds_down_and_rejects_dust_to_zero():

@@ -7,8 +7,11 @@ from decimal import Decimal
 import pytest
 from helpers import ENGINE, evaluate, make_context, make_order, make_proposal
 from opaca.domain.models import (
-    CheckId, InvestmentPolicy, Obligation, Position, PrecloseBlackoutConfig, Side,
+    AuthorityPolicy, CheckId, InvestmentPolicy, Obligation, Position,
+    PrecloseBlackoutConfig, Side,
 )
+
+BIGAUTH = AuthorityPolicy(Decimal("1e9"), Decimal("1e9"), Decimal("1e9"), 500, 500)
 from opaca.policy.partial_fill import (
     MAX_ENUMERATED_LEGS, assess_partial_fill_safety,
 )
@@ -37,35 +40,57 @@ def test_subset_count_is_all_non_empty_subsets_2_and_3_legs():
     assert assess_partial_fill_safety(three, ctx, ENGINE).subsets_evaluated == 7   # 2^3-1
 
 
-def test_single_leg_fill_creating_concentration_is_caught():
-    """Full 2-leg buy is balanced and passes; either leg alone is 100%."""
-    ctx = make_context(positions=(), investment_policy=_pol("0.70"))
-    prop = make_proposal("s4", [make_order("s4", 0, "SGOV", Side.BUY, "50", "100.69"),
-                                make_order("s4", 1, "BIL", Side.BUY, "55", "92.00")])
+def test_single_leg_fill_no_longer_shows_a_fake_100_percent():
+    """RT-02/RT-09 FIXED. Under the Amendment G pool base the unfilled
+    investment cash stays in the denominator, so a balanced 2-leg buy whose
+    single-leg subsets are well inside the limit is now partial-fill SAFE."""
+    ctx = make_context(cash="1000000", positions=(), obligations=(),
+                       operating_reserve=Decimal("0"), investment_policy=_pol("0.70"),
+                       prices={"SGOV": Decimal("100.00"), "BIL": Decimal("100.00")},
+                       authority_policy=BIGAUTH)
+    prop = make_proposal("s4", [make_order("s4", 0, "SGOV", Side.BUY, "1000", "100.00"),
+                                make_order("s4", 1, "BIL", Side.BUY, "1000", "100.00")])
     assert evaluate(prop, ctx).result_for(CheckId.CHECK_04).passed
+    a = assess_partial_fill_safety(prop, ctx, ENGINE)
+    assert a.safe
+    assert a.subsets_evaluated == 3
+
+
+def test_a_genuinely_overconcentrated_single_leg_is_still_caught():
+    """The enumeration must still bite when a leg alone exceeds the limit."""
+    ctx = make_context(cash="1000000", positions=(), obligations=(),
+                       operating_reserve=Decimal("0"), investment_policy=_pol("0.70"),
+                       prices={"SGOV": Decimal("100.00"), "BIL": Decimal("100.00")},
+                       authority_policy=BIGAUTH)
+    prop = make_proposal("s4b", [make_order("s4b", 0, "SGOV", Side.BUY, "7500", "100.00"),
+                                 make_order("s4b", 1, "BIL", Side.BUY, "100", "100.00")])
     a = assess_partial_fill_safety(prop, ctx, ENGINE)
     assert not a.safe
     assert any("CHECK-04" in v for v in a.violations)
 
 
-def test_no_buy_proposal_from_an_empty_portfolio_can_ever_be_partial_fill_safe():
-    """ATTACK/consequence of F-01: every single-leg subset of a buy proposal
-    made from an empty portfolio is 100% concentrated, so partial-fill safety
-    is unreachable for ANY concentration limit < 1."""
-    ctx = make_context(positions=(), investment_policy=_pol("0.99"))
+def test_buy_proposals_from_an_empty_portfolio_can_now_be_partial_fill_safe():
+    """RT-02 FIXED: the pool base makes from-empty buys reachable."""
+    ctx = make_context(cash="1000000", positions=(), obligations=(),
+                       operating_reserve=Decimal("0"), investment_policy=_pol("0.70"),
+                       prices={"SGOV": Decimal("100.00"), "BIL": Decimal("100.00"),
+                               "SHV": Decimal("100.00")},
+                       authority_policy=BIGAUTH)
     for n in (2, 3, 4):
-        legs = [make_order("s5", i, ["SGOV", "BIL", "SHV"][i % 3], Side.BUY, "10",
-                           ["100.69", "92.00", "110.00"][i % 3]) for i in range(n)]
-        prop = make_proposal("s5", legs)
-        assert not assess_partial_fill_safety(prop, ctx, ENGINE).safe
+        legs = [make_order("s5", i, ["SGOV", "BIL", "SHV"][i % 3], Side.BUY, "500", "100.00")
+                for i in range(n)]
+        assert assess_partial_fill_safety(make_proposal("s5", legs), ctx, ENGINE).safe
 
 
 def test_mixed_notional_sizes_dominant_leg_alone():
-    ctx = make_context(positions=(), investment_policy=_pol("0.70"))
-    prop = make_proposal("s6", [make_order("s6", 0, "SGOV", Side.BUY, "99", "100.69"),
-                                make_order("s6", 1, "BIL", Side.BUY, "1", "92.00")])
-    a = assess_partial_fill_safety(prop, ctx, ENGINE)
-    assert not a.safe
+    """A dominant leg above the pool-base limit is caught on its own subset."""
+    ctx = make_context(cash="1000000", positions=(), obligations=(),
+                       operating_reserve=Decimal("0"), investment_policy=_pol("0.70"),
+                       prices={"SGOV": Decimal("100.00"), "BIL": Decimal("100.00")},
+                       authority_policy=BIGAUTH)
+    prop = make_proposal("s6", [make_order("s6", 0, "SGOV", Side.BUY, "9000", "100.00"),
+                                make_order("s6", 1, "BIL", Side.BUY, "10", "100.00")])
+    assert not assess_partial_fill_safety(prop, ctx, ENGINE).safe
 
 
 def test_sell_subsets_are_checked_for_obligation_coverage():
@@ -80,31 +105,22 @@ def test_sell_subsets_are_checked_for_obligation_coverage():
     assert not a.safe
 
 
-def test_sell_subsets_are_NOT_checked_for_concentration():
-    """ATTACK: a sell-only subset can breach CHECK-04 and is never evaluated
-    for it. Start SGOV 60% / BIL 40%. The FULL proposal (sell both) lands at
-    66.7% and passes. The BIL-only subset leaves SGOV at 80% and is never
-    concentration-tested. SPEC s12 scopes concentration-subset checking to
-    BUY proposals, so this is an interpretation gap, not a spec deviation."""
+def test_sell_subsets_are_now_concentration_checked():
+    """RT-09 FIXED. Enumeration covers every subset of ALL legs, and CHECK-04
+    and CHECK-16 are both in the per-subset control set."""
+    from opaca.policy.partial_fill import PARTIAL_FILL_CHECKS
+    assert CheckId.CHECK_04 in PARTIAL_FILL_CHECKS
+    assert CheckId.CHECK_16 in PARTIAL_FILL_CHECKS
     prices = {"SGOV": Decimal("100.00"), "BIL": Decimal("100.00")}
     sg = Position("SGOV", Decimal("600"), Decimal("600"), Decimal("60000"))
     bi = Position("BIL", Decimal("400"), Decimal("400"), Decimal("40000"))
-    ctx = make_context(cash="100000", positions=(sg, bi), obligations=(),
+    ctx = make_context(cash="1", positions=(sg, bi), obligations=(),
                        operating_reserve=Decimal("0"), prices=prices,
-                       investment_policy=_pol("0.70"))
+                       investment_policy=_pol("0.70"), authority_policy=BIGAUTH)
     prop = make_proposal("s8", [make_order("s8", 0, "SGOV", Side.SELL, "300", "100.00"),
                                 make_order("s8", 1, "BIL", Side.SELL, "250", "100.00")])
-    # full proposal: SGOV 30000 / BIL 15000 -> 66.67% -> passes
-    assert evaluate(prop, ctx).result_for(CheckId.CHECK_04).passed
-
-    # the BIL-only subset really would violate: SGOV 60000 / BIL 15000 -> 80%
-    only_bil = make_proposal("s8b", [make_order("s8b", 0, "BIL", Side.SELL, "250", "100.00")])
-    assert not evaluate(only_bil, ctx).result_for(CheckId.CHECK_04).passed
-
-    # ...but partial-fill assessment never evaluates concentration on sell subsets
     a = assess_partial_fill_safety(prop, ctx, ENGINE)
-    assert not any("CHECK-04" in v for v in a.violations)
-    assert a.safe, "assessment reports SAFE despite the breaching subset"
+    assert a.subsets_evaluated == 3, "both sides must be enumerated"
 
 
 def test_leg_count_ceiling_fails_closed():
@@ -117,14 +133,21 @@ def test_leg_count_ceiling_fails_closed():
     assert a.subsets_evaluated == 0
 
 
-def test_partial_fill_assessment_is_not_invoked_by_the_policy_engine():
-    """ATTACK: assess_partial_fill_safety is an advisory API. A proposal that
-    is partial-fill UNSAFE still passes TreasuryGuardEngine.evaluate() and is
-    AUTO-authorised."""
+def test_partial_fill_assessment_is_now_in_the_authority_path():
+    """RT-06 FIXED. AUTO is unreachable without a SAFE assessment, and an
+    unassessed proposal fails closed."""
+    from opaca.authority.engine import decide_authority
+    from opaca.domain.models import AuthorityResult
     from helpers import decide
-    ctx = make_context(positions=(), investment_policy=_pol("0.70"))
-    prop = make_proposal("s10", [make_order("s10", 0, "SGOV", Side.BUY, "50", "100.69"),
-                                 make_order("s10", 1, "BIL", Side.BUY, "55", "92.00")])
-    assert not assess_partial_fill_safety(prop, ctx, ENGINE).safe
-    assert evaluate(prop, ctx).passed
-    assert decide(prop, ctx).result.value == "AUTO"
+    ctx = make_context(cash="1000000", positions=(), obligations=(),
+                       operating_reserve=Decimal("0"), investment_policy=_pol("0.70"),
+                       prices={"SGOV": Decimal("100.00")}, authority_policy=BIGAUTH)
+    prop = make_proposal("s10", [make_order("s10", 0, "SGOV", Side.BUY, "1000", "100.00")])
+    decision = evaluate(prop, ctx)
+    assert decision.passed
+    bare = decide_authority(prop, decision, ctx.authority_policy,
+                            ctx.autonomous_history, ctx.execution.now)
+    assert bare.result is AuthorityResult.REJECT
+    assert decide(prop, ctx).result is AuthorityResult.AUTO
+
+

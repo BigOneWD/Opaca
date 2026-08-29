@@ -49,54 +49,58 @@ def test_negative_and_zero_cycles_fail_closed():
 
 
 # ---------------------------------------------------------- ATTACKS
-def test_dates_outside_supported_2025_2027_window_do_NOT_fail_closed():
-    """ATTACK: the holiday table covers 2025-2027 only. Beyond it the weekday
-    rule is silently extrapolated, so real exchange holidays become sessions."""
-    jul4_2028 = date(2028, 7, 4)            # Tuesday, Independence Day
+def test_dates_outside_the_supported_window_now_fail_closed():
+    """RT-03 FIXED. The weekday rule is no longer extrapolated past the
+    verified holiday table; out-of-range dates raise CalendarError."""
+    from opaca.calendar.us_trading_calendar import SUPPORTED_RANGE_END, SUPPORTED_RANGE_START
+    jul4_2028 = date(2028, 7, 4)
     assert jul4_2028.weekday() == 1
-    assert US_TRADING_CALENDAR.is_trading_day(jul4_2028) is True, \
-        "expected the fail-open we are documenting"
-    assert US_TRADING_CALENDAR.session(jul4_2028) is not None
-    # and settlement silently lands on a closed day
-    assert US_TRADING_CALENDAR.settlement_date(date(2028, 7, 3)) == jul4_2028
+    for day in (jul4_2028, date(2024, 6, 3),
+                SUPPORTED_RANGE_END + timedelta(days=1),
+                SUPPORTED_RANGE_START - timedelta(days=1)):
+        with pytest.raises(CalendarError):
+            US_TRADING_CALENDAR.is_trading_day(day)
+        with pytest.raises(CalendarError):
+            US_TRADING_CALENDAR.session(day)
+    with pytest.raises(CalendarError):
+        US_TRADING_CALENDAR.settlement_date(date(2027, 12, 31))
 
 
-def test_christmas_2028_also_treated_as_a_session():
-    xmas = date(2028, 12, 25)               # Monday
-    assert xmas.weekday() == 0
-    assert US_TRADING_CALENDAR.is_trading_day(xmas) is True
+def test_christmas_2028_now_fails_closed_too():
+    with pytest.raises(CalendarError):
+        US_TRADING_CALENDAR.is_trading_day(date(2028, 12, 25))
 
 
-def test_static_calendar_past_last_session_raises_overflowerror_not_calendarerror():
-    """ATTACK: StaticTradingCalendar built from the Phase -1 evidence window
-    (2026-08-28..2026-10-12). Settlement on the final session scans ~2.9M
-    dates to date.max and then raises OverflowError -- NOT the module's
-    CalendarError -- so callers that fail closed on CalendarError do not
-    catch it."""
+def test_static_calendar_past_last_session_now_raises_CalendarError_fast():
+    """RT-04 FIXED. Bounded by last_supported_date(): a CalendarError, the
+    module's declared fail-closed type, raised immediately."""
+    import time as _time
     sessions = [
         TradingSession(date(2026, 10, 9), time(9, 30), time(16, 0)),
         TradingSession(date(2026, 10, 12), time(9, 30), time(16, 0)),
     ]
     cal = StaticTradingCalendar(sessions)
-    with pytest.raises(OverflowError):
+    start = _time.time()
+    with pytest.raises(CalendarError):
         cal.settlement_date(date(2026, 10, 12))
-    # and it is not the declared fail-closed error type
-    try:
-        cal.settlement_date(date(2026, 10, 12))
-    except Exception as exc:
-        assert not isinstance(exc, CalendarError)
+    assert _time.time() - start < 1.0, "must not scan toward date.max"
+    with pytest.raises(CalendarError):
+        StaticTradingCalendar([]).next_trading_day(date(2026, 9, 1))
 
 
-def test_static_calendar_overflow_propagates_out_of_the_policy_engine():
-    """The uncaught OverflowError escapes TreasuryGuardEngine.evaluate()."""
+def test_calendar_exhaustion_is_caught_by_the_engine_and_fails_checks_closed():
+    """RT-04 FIXED. No exception escapes evaluate(); CHECK-02 and CHECK-12
+    fail closed instead."""
     from opaca.domain.models import Position
     sessions = [TradingSession(date(2026, 9, 1), time(9, 30), time(16, 0))]
     cal = StaticTradingCalendar(sessions)
     pos = Position("SGOV", Decimal("100"), Decimal("100"), Decimal("10069"))
     ctx = make_context(positions=(pos,), calendar=cal)
     prop = make_proposal("c9", [make_order("c9", 0, "SGOV", Side.SELL, "10", "100.69")])
-    with pytest.raises(OverflowError):
-        evaluate(prop, ctx)
+    d = evaluate(prop, ctx)
+    assert not d.result_for(CheckId.CHECK_02).passed
+    assert not d.result_for(CheckId.CHECK_12).passed
+    assert not d.passed
 
 
 def test_naive_datetime_rejected_at_the_boundary():

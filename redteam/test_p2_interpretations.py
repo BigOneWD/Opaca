@@ -76,33 +76,28 @@ def test_check12_vacuous_on_buy_only_but_check02_still_protects_obligations():
 
 
 # ---- CHECK-15: disabling the optional blackout removes the ONLY calendar gate
-def test_disabling_blackout_authorises_orders_on_a_market_holiday():
-    """ATTACK: CHECK-15 is the only check that consults the trading calendar
-    for 'is the market open'. With blackout disabled, Labor Day passes."""
+def test_disabling_blackout_no_longer_authorises_on_a_market_holiday():
+    """RT-07 FIXED. Trading-day validity is unconditional; the blackout flag
+    now controls only the pre-close window on a valid session."""
     labor = datetime(2026, 9, 7, 14, 30, tzinfo=timezone.utc)
-    ctx_off = make_context(now=labor, seed_date=date(2026, 9, 7),
-                           investment_policy=_pol("1", blackout=False))
     prop = make_proposal("r5", [make_order("r5", 0, "SGOV", Side.BUY, "10", "100.69")])
-    d = evaluate(prop, ctx_off)
-    assert d.result_for(CheckId.CHECK_15).passed
-    assert d.passed
-    assert decide(prop, ctx_off).result.value == "AUTO", \
-        "AUTO-authorised on a day the exchange is closed"
-    # control: with blackout enabled the same instant fails closed
-    ctx_on = make_context(now=labor, seed_date=date(2026, 9, 7),
-                          investment_policy=_pol("1", blackout=True))
-    assert not evaluate(prop, ctx_on).result_for(CheckId.CHECK_15).passed
+    for blackout in (False, True):
+        ctx = make_context(now=labor, seed_date=date(2026, 9, 7),
+                           investment_policy=_pol("1", blackout=blackout))
+        d = evaluate(prop, ctx)
+        assert not d.result_for(CheckId.CHECK_15).passed
+        assert not d.passed
+        assert decide(prop, ctx).result.value == "REJECT"
 
 
-def test_blackout_disabled_also_authorises_on_a_saturday():
+def test_blackout_disabled_no_longer_authorises_on_a_saturday():
     sat = datetime(2026, 9, 5, 14, 30, tzinfo=timezone.utc)
     ctx = make_context(now=sat, seed_date=date(2026, 9, 5),
                        investment_policy=_pol("1", blackout=False))
     prop = make_proposal("r6", [make_order("r6", 0, "SGOV", Side.BUY, "10", "100.69")])
-    assert evaluate(prop, ctx).passed
+    assert not evaluate(prop, ctx).passed
 
 
-# ---- CHECK-13 hard reject: confirmed correct
 def test_check13_hard_reject_is_not_overridable(  ):
     from opaca.authority.engine import apply_human_approval
     from opaca.domain.models import AutonomousExecution
@@ -118,13 +113,17 @@ def test_check13_hard_reject_is_not_overridable(  ):
 
 
 # ---- evaluate(only=...) partial evaluation surface
-def test_only_parameter_can_report_passed_without_evaluating_hard_checks():
-    """Observation: PolicyDecision.passed is computed over EVALUATED checks
-    only, so a caller using only= gets passed=True on an unsafe proposal."""
-    ctx = make_context(kill_switch=False, investment_policy=_pol("0.70"))
+def test_only_parameter_can_no_longer_report_a_complete_pass():
+    """RT-10 FIXED. A partial evaluation is marked complete=False and can
+    never report passed=True; per-check detail stays readable."""
     from opaca.policy.engine import TreasuryGuardEngine
+    ctx = make_context(investment_policy=_pol("0.70"))
     prop = make_proposal("r8", [make_order("r8", 0, "SGOV", Side.BUY, "100", "100.69")])
     full = evaluate(prop, ctx)
-    assert not full.passed                       # CHECK-04 fails
+    assert full.complete
     narrow = TreasuryGuardEngine().evaluate(prop, ctx, only=frozenset({CheckId.CHECK_03}))
-    assert narrow.passed                         # unsafe proposal reported as passing
+    assert not narrow.passed
+    assert not narrow.complete
+    assert narrow.result_for(CheckId.CHECK_03).passed
+
+
