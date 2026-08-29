@@ -22,6 +22,38 @@ branch — they run against a checkout of the builder commit:
 | `test_p1_de_failclosed_money.py` | P1-D fail-closed, P1-E money / Decimal |
 | `test_p2_interpretations.py` | P2 spec-interpretation consequences |
 | `test_rt_fixes.py` | attacks on the RT-01..RT-10 remediation itself |
+| `closeout_bc5fcda/` | independent closeout probes for the final retest (95) |
+
+## Status against bc5fcda (final closeout)
+
+Target: `origin/feat/treasury-core @ bc5fcda36523375c2a5690432713f0843ef451d2`
+(`fix: harden treasury core input boundaries`).
+
+    git worktree add --detach /tmp/tc bc5fcda36523375c2a5690432713f0843ef451d2
+    OPACA_BACKEND=/tmp/tc/backend pytest -q redteam/     # -> 214 passed
+
+**214 passed / 0 failed** — the 119 original adversarial tests plus the 95
+independent closeout probes in `closeout_bc5fcda/`. Verdict:
+**PASS WITH FINDINGS**, merge recommended.
+
+The five findings named for retest are all CLOSED and each is verified by
+probes that fail at the previous commit `5d33a05`:
+
+| finding | probes failing at 5d33a05 |
+| --- | --- |
+| P1-a `PolicyContext.prices` boundary | 21 / 25 |
+| P1-b `LedgerInconsistencyError` handling | 6 / 9 |
+| P2-a future-dated authority history | 10 / 16 |
+| P2-b calendar input range | 9 / 30 |
+| P2-d CHECK-02 bare `assert` / `python -O` | 2 / 5 |
+
+50 of the 95 probes fail at `5d33a05` and all 95 pass at `bc5fcda`. No prior
+P0/P1 control regressed; nothing in this suite was weakened for the retest.
+
+Three P3 residuals stay OPEN and are pinned as characterisation tests in
+`closeout_bc5fcda/test_residual_escape_probe.py`. They are unchanged from
+`5d33a05` — not regressions. See `closeout_bc5fcda/README.md` and the full
+report at `claude/treasury-core-redteam-closeout-bc5fcda.md`.
 
 ## Status against 5d33a05
 
