@@ -3,7 +3,7 @@
 ## Autonomous Corporate Cash Agent powered by Alpaca
 
 
-**Status:** FROZEN FOR BUILD — AMENDED (Amendments A–F applied)
+**Status:** FROZEN FOR BUILD — AMENDED (Amendments A–G applied)
 **Supersedes:** Opaca v0.1 / TreasuryGuard initial spec
 **Build window:** 28 August–4 September 2026
 **Implementation starts:** Hackathon kickoff, subject to final official rules
@@ -11,7 +11,7 @@
 
 ---
 
-## Amendment Log (A–D approved 2026-08-25 pre-build; E–F approved 2026-08-28 at kickoff)
+## Amendment Log (A–D approved 2026-08-25 pre-build; E–F approved 2026-08-28 at kickoff; G approved 2026-08-29 post red-team RT-02)
 
 
 | ID | Subject | Sections touched |
@@ -25,6 +25,7 @@
 | — | Smaller clarifications | §4, §5, §9, §10, §13, §15, §17 |
 | — | UNKNOWN recovery correction | §13, §20, §21 |
 | — | CHECK-16 no short positions (evidence-driven, Phase −1A: `shorting_enabled: true` observed) | §9, §21 |
+| G | CHECK-04 concentration denominator = INVESTMENT POOL BASE (red-team RT-02 spec correction) | §9 (CHECK-04), §12, §19 |
 
 
 ### Amendment E
@@ -40,6 +41,30 @@ post-core only, no write tools, advisory context only.
 Alpaca CLI is an external operations/fault-injection tool only and is never invoked
 by Opaca runtime.
 
+
+### Amendment G
+
+
+The CHECK-04 concentration denominator is the **INVESTMENT POOL BASE**, fixed at
+proposal evaluation time (red-team RT-02 spec correction):
+
+```text
+investment_pool_base =
+    current market value of eligible investment holdings
+    + current deployable investment cash
+```
+
+Deployable investment cash is the settlement-aware investable cash: reconciled
+settled cash minus protected reserve and cash committed to obligations. The
+protected reserve, obligation-committed cash, and any other non-deployable cash
+are excluded. **Total corporate cash is never the denominator — only
+investment-pool capital belongs in it.**
+
+Per-symbol concentration is the projected eligible holding market value divided
+by the investment_pool_base. The base stays the denominator for every
+partial-fill subset, so unfilled investment cash keeps a partial fill from
+showing a fake 100% concentration. Sells reduce concentration, and a full
+liquidation passes without any special vacuous branch.
 
 All amendments preserve the existing architecture and the Freeze Rule (§23).
 
@@ -298,6 +323,21 @@ CHECK-12 evaluates against this derived schedule, **regardless of whether Alpaca
 trading visually credits sale proceeds instantly** (see §9, §17).
 
 
+### Rebalance timing consequence (red-team RT-08, accepted as designed)
+
+
+Cash-neutral same-day SELL→BUY rebalancing is intentionally unavailable: sell
+proceeds are T+1 on the derived schedule, so they cannot fund a same-day buy
+(CHECK-01/06/11 measure gross buy notional against settled cash and never
+count proposed sell proceeds). Unsettled proceeds must never be used to
+simulate same-day self-funding. A REBALANCE may therefore require:
+
+```text
+Day 1:              sell
+T+1 settlement:     proceeds become operationally available
+Day 2 / next eligible session: buy
+```
+
 ---
 
 
@@ -515,12 +555,20 @@ Every instrument must exist on the policy whitelist.
 ## CHECK-04 — Concentration
 
 
-Concentration is calculated on:
+Concentration is the projected eligible holding market value of a symbol divided
+by the **INVESTMENT POOL BASE** (Amendment G):
 
 
-> **projected post-trade total invested market value**
+> **investment_pool_base** =
+> current market value of eligible investment holdings
+> \+ current deployable investment cash
 
 
+Deployable investment cash excludes the protected reserve, cash committed to
+obligations, and any other non-deployable cash. Total corporate cash is never
+the denominator.
+
+The numerator is the projected post-trade holding market value of the symbol,
 including:
 
 
@@ -530,6 +578,23 @@ including:
 
 
 Never calculate concentration on proposal amounts alone.
+
+The investment_pool_base is fixed at proposal evaluation time and remains the
+denominator for every partial-fill subset, so unfilled investment cash stays in
+the pool and a partial fill never shows a fake 100% concentration. Sells reduce
+concentration; a full liquidation passes without a special vacuous branch.
+
+Example (deployable investment pool 22,000; SGOV proposal 18,480):
+
+```text
+investment_pool_base = 22,000
+projected SGOV       = 18,480
+
+SGOV concentration = 18,480 / 22,000 = 84%
+Policy maximum     = 70%
+
+CHECK-04: FAIL
+```
 
 
 ---
@@ -703,7 +768,16 @@ Reject dust trades.
 ---
 
 
-## CHECK-15 — Pre-Close Blackout
+## CHECK-15 — Market Session Gate and Pre-Close Blackout
+
+
+Trading-day validity is UNCONDITIONAL (RT-07). A proposal evaluated on a day
+with no trading session — a Saturday, a Sunday, or an exchange holiday — fails
+closed regardless of how the blackout is configured. The market session gate
+is never disabled.
+
+The pre-close blackout configuration is optional and controls only the
+blackout window on a valid trading day.
 
 
 Optional depending on broker spike result.
@@ -726,6 +800,40 @@ Opaca is **long-only**.
   liquidation.
 * Broker capability to short (Phase −1A observed `shorting_enabled: true` on the paper
   account) must **never** be interpreted as policy permission.
+
+
+### Reservation-aware long-only (RT-01)
+
+
+Reading only broker `quantity_available` is unsafe: an unresolved
+same-direction SELL that the broker has not yet acknowledged (or an UNKNOWN
+order) does not reduce it, so two independent sells could each pass and
+jointly open a short. Sell size is therefore bounded by a reservation-aware
+available quantity:
+
+```text
+effective_available(symbol) =
+    min(
+        broker quantity_available,
+        reconciled position quantity
+          - locally reserved unresolved SELL remaining quantity
+    )
+```
+
+The `min` prevents double subtraction: Alpaca may already have decremented
+`quantity_available` for an acknowledged order, so the local reservation is
+never subtracted from `quantity_available` a second time. Unresolved SELL
+states include pending/new, accepted/live, partially filled, and UNKNOWN; the
+bound uses REMAINING quantity, not blindly the original quantity. If an
+unresolved SELL exists but its remaining quantity cannot be determined
+safely, additional sells of that symbol fail closed.
+
+Orchestration invariant NOT solved by the stateless engine alone: two truly
+simultaneous evaluations against the same snapshot still require an ATOMIC
+SQLite reservation before broker submission. No broker execution may be added
+until the execution layer performs `evaluate -> reserve -> persist` under a
+single-writer transaction. The stateless engine alone does not solve
+simultaneous callers.
 
 
 ---
@@ -866,6 +974,11 @@ Policy cannot assume all legs fill together.
 For every multi-leg proposal evaluate dangerous subsets.
 
 
+Every relevant non-empty subset of the proposal's legs — buy legs and sell
+legs alike — is evaluated through the applicable hard controls (RT-09). For
+small demo proposals exhaustive subset enumeration is used.
+
+
 ### Buy proposal
 
 
@@ -875,7 +988,18 @@ Check whether a single-leg fill could create excessive concentration.
 ### Sell proposal
 
 
-Check liquidity assuming the liquidation does not fully fill.
+Check liquidity assuming the liquidation does not fully fill. Concentration
+changes caused by sell subsets are included in the subset evaluation.
+
+
+### Authority is gated on partial-fill safety (RT-06)
+
+
+Partial-fill safety is authoritative. A proposal whose base evaluation passes
+but whose partial-fill assessment is UNSAFE must never become AUTO; it is a
+hard safety failure (REJECT) that human approval cannot silently override.
+The base policy evaluation remains separately callable by the subset
+evaluator (no recursion).
 
 
 After partial fill:

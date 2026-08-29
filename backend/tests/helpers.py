@@ -9,12 +9,11 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import cast
 
-from opaca.authority.engine import decide_authority
 from opaca.calendar.us_trading_calendar import US_TRADING_CALENDAR, TradingCalendar
 from opaca.domain.models import (
     AssetState,
@@ -38,6 +37,7 @@ from opaca.domain.models import (
     UnresolvedOrder,
 )
 from opaca.policy.client_order_id import deterministic_client_order_id
+from opaca.policy.decision import decide as decide_authority_path
 from opaca.policy.engine import PolicyContext, TreasuryGuardEngine
 from opaca.treasury.scenario import ScenarioSeed, seed_scenario
 
@@ -46,7 +46,7 @@ EVIDENCE_DIR = REPO_ROOT / "spike" / "evidence"
 
 #: Deterministic evaluation instant: Tue 2026-09-01 14:30 UTC = 10:30 EDT,
 #: mid-session (outside the default pre-close blackout window).
-DEFAULT_NOW = datetime(2026, 9, 1, 14, 30, tzinfo=timezone.utc)
+DEFAULT_NOW = datetime(2026, 9, 1, 14, 30, tzinfo=UTC)
 DEFAULT_SEED_DATE = date(2026, 9, 1)
 
 #: Phase -1B SGOV fill price (evidence b7). Other symbols have no Phase -1
@@ -224,11 +224,6 @@ def evaluate(proposal: Proposal, context: PolicyContext) -> PolicyDecision:
 
 
 def decide(proposal: Proposal, context: PolicyContext) -> AuthorityDecision:
-    decision = ENGINE.evaluate(proposal, context)
-    return decide_authority(
-        proposal,
-        decision,
-        context.authority_policy,
-        context.autonomous_history,
-        context.execution.now,
-    )
+    """The authority path: evaluate -> partial-fill safety -> authority.
+    Partial-fill safety is wired in before AUTO is reachable (RT-06)."""
+    return decide_authority_path(proposal, context, ENGINE)

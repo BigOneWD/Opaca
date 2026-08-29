@@ -13,6 +13,7 @@ from opaca.authority.engine import decide_authority
 from opaca.domain.models import AuthorityResult, CheckId, Side
 
 from tests.helpers import (
+    decide,
     evaluate,
     make_context,
     make_order,
@@ -94,13 +95,8 @@ class TestRoutineDeploymentInsideCashCeiling:
         assert proposal.total_buy_notional == Decimal("22000.00")
         decision = evaluate(proposal, context)
         assert decision.passed, [f"{r.check_id}: {r.detail}" for r in decision.violations]
-        authority = decide_authority(
-            proposal,
-            decision,
-            context.authority_policy,
-            context.autonomous_history,
-            context.execution.now,
-        )
+        assert decision.result_for(CheckId.CHECK_04).passed
+        authority = decide(proposal, context)
         assert authority.result is AuthorityResult.AUTO
 
     def test_one_dollar_over_investable_is_rejected(self) -> None:

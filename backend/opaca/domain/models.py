@@ -7,9 +7,9 @@ enum and every aggregate is a frozen dataclass with validated fields.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
-from enum import Enum
+from enum import StrEnum
 
 from opaca.domain.money import (
     ZERO,
@@ -21,22 +21,22 @@ from opaca.domain.money import (
 )
 
 
-class Side(str, Enum):
+class Side(StrEnum):
     BUY = "BUY"
     SELL = "SELL"
 
 
-class BrokerEnvironment(str, Enum):
+class BrokerEnvironment(StrEnum):
     PAPER = "paper"
     LIVE = "live"
 
 
-class AssetStatus(str, Enum):
+class AssetStatus(StrEnum):
     ACTIVE = "active"
     INACTIVE = "inactive"
 
 
-class DecisionKind(str, Enum):
+class DecisionKind(StrEnum):
     """Closed enum of agent decisions (SPEC s7). Modeled here for typing only;
     LLM proposal generation is out of scope for the treasury core."""
 
@@ -46,13 +46,13 @@ class DecisionKind(str, Enum):
     HOLD = "hold"
 
 
-class AuthorityResult(str, Enum):
+class AuthorityResult(StrEnum):
     AUTO = "AUTO"
     APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
     REJECT = "REJECT"
 
 
-class CheckId(str, Enum):
+class CheckId(StrEnum):
     CHECK_00 = "CHECK-00"
     CHECK_01 = "CHECK-01"
     CHECK_02 = "CHECK-02"
@@ -72,7 +72,7 @@ class CheckId(str, Enum):
     CHECK_16 = "CHECK-16"
 
 
-class OrderState(str, Enum):
+class OrderState(StrEnum):
     """Internal order states (SPEC s13). The state machine itself is a later
     phase; the enum exists so CHECK-10 can classify unresolved orders."""
 
@@ -116,7 +116,7 @@ UNRESOLVED_ORDER_STATES = frozenset(
 
 
 def _require_utc(value: datetime, name: str) -> datetime:
-    if value.tzinfo is None or value.utcoffset() != timezone.utc.utcoffset(None):
+    if value.tzinfo is None or value.utcoffset() != UTC.utcoffset(None):
         raise ValueError(f"{name} must be timezone-aware UTC, got {value!r}")
     return value
 
@@ -353,17 +353,48 @@ class Proposal:
 
 @dataclass(frozen=True)
 class UnresolvedOrder:
-    """An order from any prior proposal that may still exist at the broker."""
+    """An order from any prior proposal that may still exist at the broker.
+
+    ``quantity`` / ``filled_quantity`` model the order's size for
+    reservation-aware long-only protection (CHECK-16, RT-01). Both are
+    optional because an UNKNOWN order may have no recoverable size; a
+    same-side SELL whose remaining quantity cannot be determined fails
+    closed for any further sell of that symbol.
+    """
 
     proposal_id: str
     symbol: str
     side: Side
     client_order_id: str
     state: OrderState
+    quantity: Decimal | None = None
+    filled_quantity: Decimal | None = None
+
+    def __post_init__(self) -> None:
+        if self.quantity is not None:
+            object.__setattr__(self, "quantity", non_negative_money(self.quantity))
+        if self.filled_quantity is not None:
+            object.__setattr__(self, "filled_quantity", non_negative_money(self.filled_quantity))
+        if (
+            self.quantity is not None
+            and self.filled_quantity is not None
+            and self.filled_quantity > self.quantity
+        ):
+            raise ValueError("filled_quantity cannot exceed quantity")
 
     @property
     def is_unresolved(self) -> bool:
         return self.state in UNRESOLVED_ORDER_STATES
+
+    @property
+    def remaining_quantity(self) -> Decimal | None:
+        """Remaining (not yet filled) quantity, or None when it cannot be
+        determined safely. Unknown size means the whole position could be
+        reserved at the broker; callers must fail closed."""
+        if self.quantity is None:
+            return None
+        filled = self.filled_quantity if self.filled_quantity is not None else ZERO
+        return self.quantity - filled
 
 
 @dataclass(frozen=True)
@@ -401,8 +432,18 @@ class PolicyCheckResult:
 
 @dataclass(frozen=True)
 class PolicyDecision:
+    """The outcome of one policy evaluation.
+
+    ``complete`` is False whenever hard checks were intentionally skipped
+    (``evaluate(only=...)``); a partial evaluation can therefore never
+    report a complete PASS (RT-10). Callers that need per-check detail from
+    a partial evaluation must read ``results``/``violations``, never
+    ``passed``.
+    """
+
     passed: bool
     results: tuple[PolicyCheckResult, ...]
+    complete: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "results", tuple(self.results))
@@ -416,6 +457,26 @@ class PolicyDecision:
             if result.check_id is check_id:
                 return result
         raise KeyError(f"{check_id} was not evaluated")
+
+
+@dataclass(frozen=True)
+class PartialFillAssessment:
+    """Safety of every fill subset of a proposal (SPEC s12).
+
+    ``safe`` is authoritative for execution authority (RT-06): an unsafe
+    assessment is a hard safety failure and can never become AUTO. The
+    field is only ever computed over all non-empty subsets of ALL legs —
+    buy subsets and sell subsets alike (RT-09) — so a dangerous sell
+    subset cannot hide behind a name that once covered buys only.
+    """
+
+    safe: bool
+    subsets_evaluated: int
+    violations: tuple[str, ...]
+    zero_fill_covers_obligations: bool | None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "violations", tuple(self.violations))
 
 
 @dataclass(frozen=True)

@@ -110,3 +110,86 @@ class TestSessions:
     def test_non_trading_day_has_no_session(self) -> None:
         assert US_TRADING_CALENDAR.session(date(2026, 9, 7)) is None
         assert US_TRADING_CALENDAR.session(date(2026, 8, 29)) is None
+
+
+class TestSupportedRangeFailsClosed:
+    """RT-03: built-in holiday knowledge is verified for 2025-2027 only.
+    Outside that range the calendar must raise CalendarError; weekdays are
+    never extrapolated as valid exchange sessions."""
+
+    def test_independence_day_2028_fails_closed(self) -> None:
+        jul4_2028 = date(2028, 7, 4)
+        assert jul4_2028.weekday() == 1
+        with pytest.raises(CalendarError):
+            US_TRADING_CALENDAR.is_trading_day(jul4_2028)
+        with pytest.raises(CalendarError):
+            US_TRADING_CALENDAR.session(jul4_2028)
+        with pytest.raises(CalendarError):
+            US_TRADING_CALENDAR.settlement_date(date(2028, 7, 3))
+
+    def test_christmas_2028_fails_closed(self) -> None:
+        with pytest.raises(CalendarError):
+            US_TRADING_CALENDAR.is_trading_day(date(2028, 12, 25))
+
+    def test_dates_before_supported_range_fail_closed(self) -> None:
+        with pytest.raises(CalendarError):
+            US_TRADING_CALENDAR.is_trading_day(date(2024, 12, 31))
+
+    @pytest.mark.parametrize(
+        "day",
+        [date(2025, 1, 2), date(2026, 9, 1), date(2027, 12, 30), date(2027, 12, 31)],
+    )
+    def test_supported_2025_2027_dates_are_unchanged(self, day: date) -> None:
+        assert US_TRADING_CALENDAR.is_trading_day(day) is True
+        assert US_TRADING_CALENDAR.session(day) is not None
+
+    @pytest.mark.parametrize("day", [date(2025, 1, 2), date(2026, 9, 1), date(2027, 12, 30)])
+    def test_supported_settlement_is_unchanged(self, day: date) -> None:
+        assert US_TRADING_CALENDAR.settlement_date(day) > day
+
+    def test_supported_range_constants_are_2025_through_2027(self) -> None:
+        from opaca.calendar.us_trading_calendar import (
+            SUPPORTED_RANGE_END,
+            SUPPORTED_RANGE_START,
+        )
+
+        assert date(2025, 1, 1) == SUPPORTED_RANGE_START
+        assert date(2027, 12, 31) == SUPPORTED_RANGE_END
+
+
+class TestBoundedNextTradingDay:
+    """RT-04: next_trading_day must never scan toward date.max; lookup is
+    bounded by the calendar's available data and raises CalendarError —
+    never an escaping OverflowError."""
+
+    def test_settlement_from_final_static_session_raises_calendar_error(self) -> None:
+        sessions = [
+            TradingSession(date(2026, 10, 9), time(9, 30), time(16, 0)),
+            TradingSession(date(2026, 10, 12), time(9, 30), time(16, 0)),
+        ]
+        cal = StaticTradingCalendar(sessions)
+        with pytest.raises(CalendarError):
+            cal.settlement_date(date(2026, 10, 12))
+
+    def test_no_overflow_error_type_escapes_the_calendar_boundary(self) -> None:
+        cal = StaticTradingCalendar([TradingSession(date(2026, 10, 12), time(9, 30), time(16, 0))])
+        with pytest.raises(CalendarError) as excinfo:
+            cal.next_trading_day(date(2026, 10, 12))
+        assert not isinstance(excinfo.value, OverflowError)
+
+    def test_settlement_inside_static_window_still_works(self) -> None:
+        sessions = [
+            TradingSession(date(2026, 10, 9), time(9, 30), time(16, 0)),
+            TradingSession(date(2026, 10, 12), time(9, 30), time(16, 0)),
+        ]
+        cal = StaticTradingCalendar(sessions)
+        assert cal.settlement_date(date(2026, 10, 9)) == date(2026, 10, 12)
+
+    def test_empty_static_calendar_fails_closed(self) -> None:
+        cal = StaticTradingCalendar([])
+        with pytest.raises(CalendarError):
+            cal.next_trading_day(date(2026, 10, 9))
+
+    def test_rule_calendar_settlement_at_end_of_supported_range_fails_closed(self) -> None:
+        with pytest.raises(CalendarError):
+            US_TRADING_CALENDAR.settlement_date(date(2027, 12, 31))

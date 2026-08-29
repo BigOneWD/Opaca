@@ -51,9 +51,24 @@ class TradingCalendar(ABC):
     def session(self, day: date) -> TradingSession | None:
         """Session details for ``day`` or None if not a trading day."""
 
+    @abstractmethod
+    def last_supported_date(self) -> date | None:
+        """Last date this calendar can answer for, or None if it carries no
+        session data at all. Lookups are bounded by this date (RT-04): the
+        calendar must fail closed with CalendarError instead of scanning
+        toward date.max."""
+
     def next_trading_day(self, day: date) -> date:
+        bound = self.last_supported_date()
+        if bound is None:
+            raise CalendarError("calendar carries no sessions; no next trading day exists")
         candidate = day + timedelta(days=1)
         while not self.is_trading_day(candidate):
+            if candidate >= bound:
+                raise CalendarError(
+                    f"no next trading session exists on or before {bound} after {day}; "
+                    f"fail closed (calendar data is exhausted)"
+                )
             candidate += timedelta(days=1)
         return candidate
 
@@ -99,6 +114,11 @@ class StaticTradingCalendar(TradingCalendar):
 
     def session(self, day: date) -> TradingSession | None:
         return self._sessions.get(day)
+
+    def last_supported_date(self) -> date | None:
+        if not self._sessions:
+            return None
+        return max(self._sessions)
 
 
 #: NYSE holidays 2025-2027. 2026 is verified against Phase -1 calendar
@@ -157,25 +177,55 @@ NYSE_EARLY_CLOSES: frozenset[date] = frozenset(
 )
 
 
+#: Explicit supported range of the built-in holiday knowledge (RT-03). The
+#: NYSE holiday/early-close tables above are verified for 2025-2027 only.
+#: Outside this range the calendar must fail closed: extrapolating the
+#: weekday rule would silently treat real exchange holidays as sessions.
+SUPPORTED_RANGE_START = date(2025, 1, 1)
+SUPPORTED_RANGE_END = date(2027, 12, 31)
+
+
 class USTradingCalendar(TradingCalendar):
-    """Rule-based US calendar: Mon-Fri minus explicit holidays."""
+    """Rule-based US calendar: Mon-Fri minus explicit holidays.
+
+    Holiday knowledge is verified for ``SUPPORTED_RANGE_START`` ..
+    ``SUPPORTED_RANGE_END`` only. Any date outside that range raises
+    CalendarError (fail closed); weekdays are never extrapolated as valid
+    exchange sessions (RT-03).
+    """
 
     def __init__(
         self,
         holidays: frozenset[date] = NYSE_HOLIDAYS,
         early_closes: frozenset[date] = NYSE_EARLY_CLOSES,
+        supported_start: date = SUPPORTED_RANGE_START,
+        supported_end: date = SUPPORTED_RANGE_END,
     ):
         self._holidays = holidays
         self._early_closes = early_closes
+        self._supported_start = supported_start
+        self._supported_end = supported_end
+
+    def _require_supported(self, day: date) -> None:
+        if not (self._supported_start <= day <= self._supported_end):
+            raise CalendarError(
+                f"{day} is outside the supported calendar range "
+                f"{self._supported_start}..{self._supported_end}; fail closed"
+            )
 
     def is_trading_day(self, day: date) -> bool:
+        self._require_supported(day)
         return day.weekday() < 5 and day not in self._holidays
 
     def session(self, day: date) -> TradingSession | None:
+        self._require_supported(day)
         if not self.is_trading_day(day):
             return None
         close = EARLY_SESSION_CLOSE if day in self._early_closes else DEFAULT_SESSION_CLOSE
         return TradingSession(day, DEFAULT_SESSION_OPEN, close)
+
+    def last_supported_date(self) -> date | None:
+        return self._supported_end
 
 
 US_TRADING_CALENDAR = USTradingCalendar()

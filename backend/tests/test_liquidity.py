@@ -7,7 +7,7 @@ evidence b7 (paper cash credited to $99,999.99 immediately at terminal fill).
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import cast
 
@@ -179,5 +179,5 @@ def _broker(cash: Decimal) -> BrokerCashState:
         buying_power=Decimal("400000"),
         non_marginable_buying_power=cash,
         multiplier=Decimal("4"),
-        as_of=datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc),
+        as_of=datetime(2026, 8, 28, 14, 30, tzinfo=UTC),
     )

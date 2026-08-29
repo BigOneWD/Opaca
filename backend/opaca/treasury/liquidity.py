@@ -164,24 +164,57 @@ class ProjectedPosition:
 
 @dataclass(frozen=True)
 class PortfolioProjection:
-    """Projected post-trade portfolio state (SPEC s9 CHECK-04).
+    """Projected post-trade portfolio state (SPEC s9 CHECK-04, Amendment G).
 
-    Concentration denominators are ALWAYS computed from this projection:
-    existing holdings + proposed fills, never proposal amounts alone.
+    ``investment_pool_base`` is the denominator used for every
+    concentration fraction in ``concentration_by_symbol``; when no explicit
+    pool base is supplied it degenerates to the projected invested market
+    value (standalone projection use only — the policy engine always passes
+    the proposal-fixed INVESTMENT POOL BASE).
     """
 
     positions: tuple[ProjectedPosition, ...]
     total_invested_value: Decimal
     concentration_by_symbol: Mapping[str, Decimal]
+    investment_pool_base: Decimal
 
     def concentration_of(self, symbol: str) -> Decimal:
         return self.concentration_by_symbol.get(symbol, ZERO)
+
+
+def investment_pool_base(
+    positions: Sequence[Position],
+    prices: Mapping[str, Decimal],
+    investable_cash: Decimal,
+) -> Decimal:
+    """INVESTMENT POOL BASE (SPEC s9 CHECK-04, Amendment G; red-team RT-02).
+
+    The concentration denominator is the investment-pool capital, fixed at
+    proposal evaluation time:
+
+        current market value of eligible investment holdings
+        + current deployable investment cash
+
+    Deployable investment cash is the settlement-aware investable cash:
+    reconciled settled cash minus protected reserve and cash committed to
+    obligations. Total corporate cash is NOT part of this denominator, and
+    neither is any non-deployable cash. Negative investable cash is a
+    liquidity event, not deployable capital, and contributes zero.
+    """
+    holdings_value = ZERO
+    for position in positions:
+        if position.symbol not in prices:
+            raise MissingPriceError(position.symbol)
+        holdings_value += round_money(position.quantity * prices[position.symbol])
+    deployable = investable_cash if investable_cash > ZERO else ZERO
+    return holdings_value + deployable
 
 
 def project_portfolio(
     positions: Sequence[Position],
     orders: Sequence[ProposedOrder],
     prices: Mapping[str, Decimal],
+    pool_base: Decimal | None = None,
 ) -> PortfolioProjection:
     existing = {p.symbol: p.quantity for p in positions}
     delta: dict[str, Decimal] = {}
@@ -212,14 +245,16 @@ def project_portfolio(
         )
         total += market_value
 
+    denominator = pool_base if pool_base is not None else total
     concentration: dict[str, Decimal] = {}
     for position in projected:
-        if position.projected_market_value > ZERO and total > ZERO:
-            concentration[position.symbol] = position.projected_market_value / total
+        if position.projected_market_value > ZERO and denominator > ZERO:
+            concentration[position.symbol] = position.projected_market_value / denominator
     return PortfolioProjection(
         positions=tuple(projected),
         total_invested_value=total,
         concentration_by_symbol=concentration,
+        investment_pool_base=denominator,
     )
 
 
@@ -229,6 +264,8 @@ def sell_settlement_events(
     calendar: TradingCalendar,
 ) -> tuple[SettlementEvent, ...]:
     """Derived T+1 settlement events for proposed sells (Amendment B)."""
+    if not any(leg.side is Side.SELL for leg in proposal_legs):
+        return ()
     settlement = calendar.settlement_date(trade_date)
     events = []
     for leg in proposal_legs:

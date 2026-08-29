@@ -24,6 +24,14 @@ CENT = Decimal("0.01")
 SHARE_INCREMENT = Decimal("0.000000001")
 ZERO = Decimal("0")
 
+#: Magnitude boundary for every money/quantity value. The default decimal
+#: context carries 28 significant digits; quantizing to cents needs two
+#: fractional digits, so an integer part of at most 26 digits remains
+#: representable. Values at or beyond this boundary are rejected at the
+#: validation boundary with MoneyError instead of escaping later as a raw
+#: decimal.InvalidOperation from quantize() (red-team RT-05).
+MAGNITUDE_LIMIT = Decimal("1e26")
+
 
 class MoneyError(ValueError):
     """Raised for invalid or non-exact monetary input."""
@@ -41,6 +49,8 @@ def money(value: str | int | Decimal) -> Decimal:
         raise MoneyError(f"not a decimal amount: {value!r}") from exc
     if not result.is_finite():
         raise MoneyError(f"non-finite amount: {value!r}")
+    if abs(result) >= MAGNITUDE_LIMIT:
+        raise MoneyError(f"magnitude {result} exceeds supported boundary {MAGNITUDE_LIMIT}")
     return result
 
 
@@ -58,19 +68,33 @@ def positive_money(value: str | int | Decimal) -> Decimal:
     return result
 
 
+def _quantize(
+    amount: Decimal, increment: Decimal, rounding: str, value: str | int | Decimal
+) -> Decimal:
+    """Quantize boundary: a raw decimal.InvalidOperation must never escape a
+    public rounding function; it is a domain validation error (RT-05)."""
+    try:
+        return amount.quantize(increment, rounding=rounding)
+    except InvalidOperation as exc:
+        raise MoneyError(
+            f"cannot represent {value!r} at increment {increment} within the "
+            f"supported decimal precision"
+        ) from exc
+
+
 def round_money(value: str | int | Decimal, rounding: str = ROUND_HALF_UP) -> Decimal:
     """Quantize to cents with an explicit rounding mode (default HALF_UP)."""
-    return money(value).quantize(CENT, rounding=rounding)
+    return _quantize(money(value), CENT, rounding, value)
 
 
 def round_budget(value: str | int | Decimal) -> Decimal:
     """Quantize a budget/notional DOWN to cents (never increases the budget)."""
-    return money(value).quantize(CENT, rounding=ROUND_DOWN)
+    return _quantize(money(value), CENT, ROUND_DOWN, value)
 
 
 def round_quantity(value: str | int | Decimal) -> Decimal:
     """Quantize a share quantity down to the 1e-9 share increment."""
-    result = money(value).quantize(SHARE_INCREMENT, rounding=ROUND_DOWN)
+    result = _quantize(money(value), SHARE_INCREMENT, ROUND_DOWN, value)
     if result <= 0:
         raise MoneyError(f"quantity must be > 0 after rounding, got {value!r}")
     return result

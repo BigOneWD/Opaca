@@ -5,7 +5,7 @@ Required proofs 17 and 18 (plus 13 exercised through the engine).
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from opaca.calendar.us_trading_calendar import US_TRADING_CALENDAR
@@ -15,7 +15,7 @@ from opaca.treasury.liquidity import sell_settlement_events
 from tests.helpers import evaluate, make_context, make_order, make_proposal
 
 FRIDAY = date(2026, 8, 28)
-FRIDAY_NOW = datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc)  # 10:30 EDT
+FRIDAY_NOW = datetime(2026, 8, 28, 14, 30, tzinfo=UTC)  # 10:30 EDT
 SETTLES_MONDAY = date(2026, 8, 31)
 
 PRICE = Decimal("100.00")

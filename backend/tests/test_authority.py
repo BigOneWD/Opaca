@@ -16,6 +16,7 @@ from opaca.domain.models import (
     AuthorityResult,
     AutonomousExecution,
     CheckId,
+    PartialFillAssessment,
     ProposedOrder,
     Side,
 )
@@ -26,6 +27,13 @@ from tests.helpers import (
     make_context,
     make_order,
     make_proposal,
+)
+
+#: These tests isolate the authority dimensions; partial-fill safety is a
+#: separate gate (tested in test_partial_fill_authority.py) and is asserted
+#: SAFE explicitly here.
+SAFE_PARTIAL_FILL = PartialFillAssessment(
+    safe=True, subsets_evaluated=0, violations=(), zero_fill_covers_obligations=None
 )
 
 PRICE = Decimal("100.00")
@@ -84,6 +92,7 @@ class TestSplitOrdersCannotBypassAuthority:
             context.authority_policy,
             context.autonomous_history,
             context.execution.now,
+            partial_fill=SAFE_PARTIAL_FILL,
         )
         assert authority.result is AuthorityResult.APPROVAL_REQUIRED
         assert any("per-proposal" in reason for reason in authority.reasons)
@@ -111,6 +120,7 @@ class TestRollingWindows:
             context.authority_policy,
             context.autonomous_history,
             context.execution.now,
+            partial_fill=SAFE_PARTIAL_FILL,
         )
         assert authority.result is AuthorityResult.APPROVAL_REQUIRED
         assert any("rolling 24h" in reason for reason in authority.reasons)
@@ -135,6 +145,7 @@ class TestRollingWindows:
             context.authority_policy,
             context.autonomous_history,
             context.execution.now,
+            partial_fill=SAFE_PARTIAL_FILL,
         )
         assert authority.result is AuthorityResult.AUTO
 
@@ -158,6 +169,7 @@ class TestRollingWindows:
             context.authority_policy,
             context.autonomous_history,
             context.execution.now,
+            partial_fill=SAFE_PARTIAL_FILL,
         )
         assert authority.result is AuthorityResult.APPROVAL_REQUIRED
         assert any("order count" in reason for reason in authority.reasons)
@@ -181,6 +193,7 @@ class TestRollingWindows:
             context.authority_policy,
             context.autonomous_history,
             context.execution.now,
+            partial_fill=SAFE_PARTIAL_FILL,
         )
         assert authority.result is AuthorityResult.AUTO
 
@@ -202,6 +215,7 @@ class TestDecisionPrecedence:
             context.authority_policy,
             context.autonomous_history,
             context.execution.now,
+            partial_fill=SAFE_PARTIAL_FILL,
         )
         assert authority.result is AuthorityResult.REJECT
 
@@ -219,6 +233,7 @@ class TestDecisionPrecedence:
             context.authority_policy,
             context.autonomous_history,
             context.execution.now,
+            partial_fill=SAFE_PARTIAL_FILL,
         )
         assert authority.result is AuthorityResult.REJECT
 
@@ -239,6 +254,7 @@ class TestHumanApproval:
             context.authority_policy,
             context.autonomous_history,
             context.execution.now,
+            partial_fill=SAFE_PARTIAL_FILL,
         )
         assert authority.result is AuthorityResult.APPROVAL_REQUIRED
         promoted = apply_human_approval(authority)
@@ -257,6 +273,7 @@ class TestHumanApproval:
             context.authority_policy,
             context.autonomous_history,
             context.execution.now,
+            partial_fill=SAFE_PARTIAL_FILL,
         )
         assert authority.result is AuthorityResult.REJECT
         assert not authority.can_be_approved_by_human

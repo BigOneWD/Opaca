@@ -4,7 +4,7 @@ opposing orders (21), pre-close blackout (22), plus CHECK-03/05/08/09/13.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -197,7 +197,7 @@ class TestPreCloseBlackout:
     def test_blackout_blocks_deterministically_inside_window(self) -> None:
         """Required proof 22 (enabled case). 19:50 UTC = 15:50 EDT, within
         the 15-minute window before the 16:00 close."""
-        now = datetime(2026, 9, 1, 19, 50, tzinfo=timezone.utc)
+        now = datetime(2026, 9, 1, 19, 50, tzinfo=UTC)
         context = make_context(
             prices=PRICES, now=now, obligations=(), operating_reserve=Decimal("0")
         )
@@ -208,7 +208,7 @@ class TestPreCloseBlackout:
         assert not result.passed
 
     def test_blackout_passes_outside_window(self) -> None:
-        now = datetime(2026, 9, 1, 19, 40, tzinfo=timezone.utc)  # 15:40 EDT
+        now = datetime(2026, 9, 1, 19, 40, tzinfo=UTC)  # 15:40 EDT
         context = make_context(
             prices=PRICES, now=now, obligations=(), operating_reserve=Decimal("0")
         )
@@ -223,7 +223,7 @@ class TestPreCloseBlackout:
         from tests.helpers import default_investment_policy
 
         disabled = default_investment_policy(blackout_enabled=False)
-        now = datetime(2026, 9, 1, 19, 55, tzinfo=timezone.utc)
+        now = datetime(2026, 9, 1, 19, 55, tzinfo=UTC)
         context = make_context(
             prices=PRICES,
             now=now,
@@ -238,7 +238,7 @@ class TestPreCloseBlackout:
 
     def test_blackout_respects_early_close_sessions(self) -> None:
         # Day after Thanksgiving 2026 closes 13:00 EST (UTC-5).
-        now = datetime(2026, 11, 27, 17, 50, tzinfo=timezone.utc)  # 12:50 EST
+        now = datetime(2026, 11, 27, 17, 50, tzinfo=UTC)  # 12:50 EST
         context = make_context(
             prices=PRICES, now=now, obligations=(), operating_reserve=Decimal("0")
         )
@@ -249,7 +249,7 @@ class TestPreCloseBlackout:
         assert not evaluate(proposal, context).result_for(CheckId.CHECK_15).passed
 
     def test_non_trading_day_fails_closed(self) -> None:
-        now = datetime(2026, 9, 5, 14, 30, tzinfo=timezone.utc)  # Saturday
+        now = datetime(2026, 9, 5, 14, 30, tzinfo=UTC)  # Saturday
         context = make_context(
             prices=PRICES, now=now, obligations=(), operating_reserve=Decimal("0")
         )
@@ -257,6 +257,62 @@ class TestPreCloseBlackout:
             "prop-weekend", [make_order("prop-weekend", 0, "SGOV", Side.BUY, "10", PRICE)]
         )
         assert not evaluate(proposal, context).result_for(CheckId.CHECK_15).passed
+
+    def test_saturday_is_rejected_with_blackout_disabled(self) -> None:
+        """RT-07: trading-day validity is unconditional; the blackout config
+        controls only the pre-close window."""
+        from tests.helpers import default_investment_policy
+
+        disabled = default_investment_policy(blackout_enabled=False)
+        now = datetime(2026, 9, 5, 14, 30, tzinfo=UTC)  # Saturday
+        context = make_context(
+            prices=PRICES,
+            now=now,
+            investment_policy=disabled,
+            obligations=(),
+            operating_reserve=Decimal("0"),
+        )
+        proposal = make_proposal(
+            "prop-sat-off", [make_order("prop-sat-off", 0, "SGOV", Side.BUY, "10", PRICE)]
+        )
+        result = evaluate(proposal, context).result_for(CheckId.CHECK_15)
+        assert not result.passed
+        assert "fail closed" in result.detail
+
+    def test_exchange_holiday_is_rejected_with_blackout_disabled(self) -> None:
+        """RT-07: Labor Day 2026 fails closed even when the optional
+        blackout window is disabled."""
+        from tests.helpers import default_investment_policy
+
+        disabled = default_investment_policy(blackout_enabled=False)
+        now = datetime(2026, 9, 7, 14, 30, tzinfo=UTC)  # Labor Day
+        context = make_context(
+            prices=PRICES,
+            now=now,
+            investment_policy=disabled,
+            obligations=(),
+            operating_reserve=Decimal("0"),
+        )
+        proposal = make_proposal(
+            "prop-holiday-off", [make_order("prop-holiday-off", 0, "SGOV", Side.BUY, "10", PRICE)]
+        )
+        decision = evaluate(proposal, context)
+        assert not decision.result_for(CheckId.CHECK_15).passed
+        assert not decision.passed
+
+    def test_unsupported_calendar_date_fails_closed_for_buys(self) -> None:
+        """RT-03/RT-07: a proposal evaluated outside the supported calendar
+        range fails closed instead of extrapolating weekdays."""
+        now = datetime(2028, 7, 4, 14, 30, tzinfo=UTC)
+        context = make_context(
+            prices=PRICES, now=now, obligations=(), operating_reserve=Decimal("0")
+        )
+        proposal = make_proposal(
+            "prop-2028", [make_order("prop-2028", 0, "SGOV", Side.BUY, "10", PRICE)]
+        )
+        result = evaluate(proposal, context).result_for(CheckId.CHECK_15)
+        assert not result.passed
+        assert "fail closed" in result.detail
 
 
 class TestPermittedSecurity:
@@ -451,6 +507,61 @@ class TestMissingPriceFailsClosed:
         decision = evaluate(proposal, context)
         assert not decision.result_for(CheckId.CHECK_04).passed
         assert not decision.result_for(CheckId.CHECK_11).passed
+        assert not decision.passed
+
+
+class TestPartialEvaluationCannotReportCompletePass:
+    """RT-10: evaluate(only=...) must never silently return a complete
+    PolicyDecision.passed=True while hard checks were intentionally
+    skipped. The internal subset evaluator keeps working because it reads
+    results/violations, not passed."""
+
+    def test_partial_evaluation_is_incomplete_and_cannot_pass(self) -> None:
+        from opaca.policy.engine import TreasuryGuardEngine
+
+        context = make_context(prices=PRICES)
+        proposal = make_proposal(
+            "prop-partial", [make_order("prop-partial", 0, "SGOV", Side.BUY, "184.8", PRICE)]
+        )
+        full = evaluate(proposal, context)
+        assert full.complete
+        assert not full.passed  # CHECK-04: 18,480 is 84% of the 22,000 pool
+        narrow = TreasuryGuardEngine().evaluate(
+            proposal, context, only=frozenset({CheckId.CHECK_03})
+        )
+        assert not narrow.complete
+        assert not narrow.passed
+        assert narrow.result_for(CheckId.CHECK_03).passed
+
+    def test_complete_evaluation_keeps_passed_semantics(self) -> None:
+        context = make_context(prices=PRICES, obligations=(), operating_reserve=Decimal("0"))
+        proposal = make_proposal(
+            "prop-complete", [make_order("prop-complete", 0, "SGOV", Side.BUY, "1", PRICE)]
+        )
+        decision = evaluate(proposal, context)
+        assert decision.complete
+        assert decision.passed
+
+    def test_partial_results_still_readable_by_the_subset_evaluator(self) -> None:
+        from opaca.policy.engine import TreasuryGuardEngine
+
+        context = make_context(prices=PRICES, obligations=(), operating_reserve=Decimal("0"))
+        proposal = make_proposal(
+            "prop-readable", [make_order("prop-readable", 0, "AAPL", Side.BUY, "1", PRICE)]
+        )
+        narrow = TreasuryGuardEngine().evaluate(
+            proposal, context, only=frozenset({CheckId.CHECK_03})
+        )
+        assert tuple(r.check_id for r in narrow.violations) == (CheckId.CHECK_03,)
+
+    def test_kill_switch_short_circuit_remains_complete_reject(self) -> None:
+        context = make_context(prices=PRICES, kill_switch=True)
+        proposal = make_proposal(
+            "prop-kill-complete",
+            [make_order("prop-kill-complete", 0, "SGOV", Side.BUY, "1", PRICE)],
+        )
+        decision = evaluate(proposal, context)
+        assert decision.complete
         assert not decision.passed
 
 

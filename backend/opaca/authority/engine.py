@@ -2,8 +2,12 @@
 
 Result is exactly one of AUTO / APPROVAL_REQUIRED / REJECT:
 
-* REJECT              - hard policy violation (kill switch included).
-* AUTO                - policy-valid AND every delegated dimension passes.
+* REJECT              - hard policy violation (kill switch included), or a
+                        partial-fill safety assessment that is not SAFE
+                        (RT-06: a hard safety failure, never AUTO, and not
+                        something human approval silently overrides).
+* AUTO                - policy-valid AND partial-fill-safe AND every
+                        delegated dimension passes.
 * APPROVAL_REQUIRED   - policy-valid but outside delegated authority.
 
 Splitting one action across several orders cannot bypass authority: the
@@ -22,6 +26,7 @@ from opaca.domain.models import (
     AuthorityPolicy,
     AuthorityResult,
     AutonomousExecution,
+    PartialFillAssessment,
     PolicyDecision,
     Proposal,
 )
@@ -110,7 +115,15 @@ def decide_authority(
     authority_policy: AuthorityPolicy,
     history: Sequence[AutonomousExecution],
     now: datetime,
+    partial_fill: PartialFillAssessment | None = None,
 ) -> AuthorityDecision:
+    """AUTO is reachable only with a SAFE partial-fill assessment (RT-06).
+
+    ``partial_fill=None`` fails closed: an unassessed proposal can never be
+    AUTO. An UNSAFE assessment is a hard safety failure — REJECT — that
+    human approval cannot override; it is never downgraded to
+    APPROVAL_REQUIRED.
+    """
     if not policy_decision.passed:
         reasons = tuple(f"{r.check_id.value}: {r.detail}" for r in policy_decision.violations) or (
             "hard policy violation",
@@ -118,6 +131,19 @@ def decide_authority(
         return AuthorityDecision(
             result=AuthorityResult.REJECT,
             reasons=reasons,
+            policy_decision=policy_decision,
+        )
+    if partial_fill is None:
+        return AuthorityDecision(
+            result=AuthorityResult.REJECT,
+            reasons=("partial-fill safety was not assessed; execution must fail closed",),
+            policy_decision=policy_decision,
+        )
+    if not partial_fill.safe:
+        return AuthorityDecision(
+            result=AuthorityResult.REJECT,
+            reasons=("partial-fill safety assessment is UNSAFE; hard safety failure",)
+            + partial_fill.violations,
             policy_decision=policy_decision,
         )
     violations = authority_dimension_violations(proposal, authority_policy, history, now)

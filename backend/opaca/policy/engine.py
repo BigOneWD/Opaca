@@ -13,22 +13,31 @@ Design rules implemented here:
 * The engine never reads ``BrokerCashState.buying_power``: Phase -1A proved
   it is 4x reconciled cash (broker leverage), not corporate liquidity
   (CHECK-06 / CHECK-11).
+
+Orchestration invariant NOT solved by this stateless engine (RT-01):
+``unresolved_orders`` reservations protect against a prior order that is
+already recorded in the reconciled input state. Two truly simultaneous
+evaluations against the SAME snapshot can still both pass before either
+order exists in that snapshot. Any execution layer must therefore perform
+``evaluate -> reserve -> persist`` as one ATOMIC single-writer SQLite
+transaction BEFORE broker submission; no broker execution may be added
+until then. Do not claim the stateless engine alone solves simultaneous
+callers.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import Callable
 from zoneinfo import ZoneInfo
 
 from opaca.authority.engine import (
     authority_dimension_violations,
     runaway_order_count_violation,
 )
-from opaca.calendar.us_trading_calendar import TradingCalendar
+from opaca.calendar.us_trading_calendar import CalendarError, TradingCalendar
 from opaca.domain.models import (
     AssetState,
     AuthorityPolicy,
@@ -58,6 +67,7 @@ from opaca.treasury.liquidity import (
     MissingPriceError,
     PortfolioProjection,
     compute_liquidity,
+    investment_pool_base,
     project_portfolio,
     sell_settlement_events,
 )
@@ -114,6 +124,58 @@ def _result(check_id: CheckId, passed: bool, detail: str) -> PolicyCheckResult:
     )
 
 
+def sell_reservations(
+    unresolved_orders: tuple[UnresolvedOrder, ...],
+) -> tuple[dict[str, Decimal], frozenset[str]]:
+    """Locally reserved quantity per symbol from unresolved SELL orders
+    (RT-01). Every unresolved state counts — pending/new, accepted/live,
+    partially filled, UNKNOWN and every pre-submission state — because any
+    of them may still consume shares at the broker.
+
+    Returns ``(reserved_by_symbol, undeterminable_symbols)``. A symbol lands
+    in ``undeterminable_symbols`` when an unresolved SELL exists whose
+    remaining quantity cannot be determined safely; additional sells of that
+    symbol must fail closed.
+    """
+    reserved: dict[str, Decimal] = {}
+    undeterminable: set[str] = set()
+    for order in unresolved_orders:
+        if not order.is_unresolved or order.side is not Side.SELL:
+            continue
+        remaining = order.remaining_quantity
+        if remaining is None:
+            undeterminable.add(order.symbol)
+        else:
+            reserved[order.symbol] = reserved.get(order.symbol, ZERO) + remaining
+    return reserved, frozenset(undeterminable)
+
+
+def effective_available_quantity(
+    position: Position | None,
+    reserved_quantity: Decimal,
+    undeterminable: bool,
+) -> Decimal:
+    """Reservation-aware long-only bound (RT-01):
+
+        effective_available(symbol) =
+            min(
+                broker quantity_available,
+                reconciled position quantity
+                  - locally reserved unresolved SELL remaining quantity
+            )
+
+    The ``min`` is essential: Alpaca may already have decremented
+    ``quantity_available`` for an acknowledged order, so the local
+    reservation must never be subtracted from ``quantity_available`` a
+    second time. An undeterminable reservation or a missing position fails
+    closed to zero.
+    """
+    if position is None or undeterminable:
+        return ZERO
+    local_bound = position.quantity - reserved_quantity
+    return min(position.quantity_available, local_bound)
+
+
 @dataclass(frozen=True)
 class _Frame:
     as_of_date: date
@@ -124,6 +186,7 @@ class _Frame:
     buy_notional: Decimal
     projected_quantity_by_symbol: Mapping[str, Decimal]
     sell_quantity_by_symbol: Mapping[str, Decimal]
+    calendar_error: str | None = None
 
 
 class TreasuryGuardEngine:
@@ -135,6 +198,9 @@ class TreasuryGuardEngine:
         context: PolicyContext,
         only: frozenset[CheckId] | None = None,
     ) -> PolicyDecision:
+        """Evaluate checks in order. ``only`` restricts evaluation for the
+        internal subset evaluator; a partial evaluation is marked
+        ``complete=False`` and can never report ``passed=True`` (RT-10)."""
         if context.execution.kill_switch_active:
             return PolicyDecision(
                 passed=False,
@@ -145,6 +211,7 @@ class TreasuryGuardEngine:
                         "kill switch active: no new order may be submitted",
                     ),
                 ),
+                complete=True,
             )
 
         frame = self._build_frame(proposal, context)
@@ -156,8 +223,15 @@ class TreasuryGuardEngine:
                 self, f"_check_{check_id.name.split('_')[1]}"
             )
             results.append(handler(proposal, context, frame))
-        passed = all(r.passed for r in results if r.hard)
-        return PolicyDecision(passed=passed, results=tuple(results))
+        evaluated = {r.check_id for r in results}
+        skipped_hard = [
+            check_id
+            for check_id in CHECK_ORDER
+            if check_id not in evaluated and check_id not in SOFT_CHECKS
+        ]
+        complete = not skipped_hard
+        passed = complete and all(r.passed for r in results if r.hard)
+        return PolicyDecision(passed=passed, results=tuple(results), complete=complete)
 
     def _build_frame(self, proposal: Proposal, context: PolicyContext) -> _Frame:
         as_of_date = context.execution.now.date()
@@ -168,11 +242,23 @@ class TreasuryGuardEngine:
             operating_reserve=context.liquidity_policy.operating_reserve,
             as_of=as_of_date,
         )
-        proposed_sell_events = sell_settlement_events(proposal.legs, as_of_date, context.calendar)
+        calendar_error: str | None = None
+        proposed_sell_events: tuple[SettlementEvent, ...] = ()
+        try:
+            proposed_sell_events = sell_settlement_events(
+                proposal.legs, as_of_date, context.calendar
+            )
+        except CalendarError as exc:
+            calendar_error = str(exc)
         missing_price: str | None = None
         portfolio: PortfolioProjection | None = None
         try:
-            portfolio = project_portfolio(context.positions, proposal.legs, context.prices)
+            pool_base = investment_pool_base(
+                context.positions, context.prices, liquidity.investable_cash
+            )
+            portfolio = project_portfolio(
+                context.positions, proposal.legs, context.prices, pool_base
+            )
         except MissingPriceError as exc:
             missing_price = str(exc.args[0]) if exc.args else "unknown"
 
@@ -195,6 +281,7 @@ class TreasuryGuardEngine:
             buy_notional=proposal.total_buy_notional,
             projected_quantity_by_symbol=projected_qty,
             sell_quantity_by_symbol=sell_qty,
+            calendar_error=calendar_error,
         )
 
     def _post_trade_available(self, frame: _Frame, day: date) -> Decimal:
@@ -229,6 +316,13 @@ class TreasuryGuardEngine:
     def _check_02(
         self, proposal: Proposal, context: PolicyContext, frame: _Frame
     ) -> PolicyCheckResult:
+        if frame.calendar_error is not None:
+            return _result(
+                CheckId.CHECK_02,
+                False,
+                f"cannot derive proposed-sell settlement dates: {frame.calendar_error} "
+                f"(fail closed)",
+            )
         reserve = frame.liquidity.operating_reserve
         dates = {frame.as_of_date}
         dates.update(row.on_date for row in frame.liquidity.schedule)
@@ -261,6 +355,12 @@ class TreasuryGuardEngine:
     def _check_04(
         self, proposal: Proposal, context: PolicyContext, frame: _Frame
     ) -> PolicyCheckResult:
+        """Concentration against the INVESTMENT POOL BASE (Amendment G,
+        RT-02): eligible investment holdings market value + deployable
+        investment cash, fixed at proposal evaluation time. Unfilled
+        investment cash stays in the pool, so a partial-fill subset never
+        shows a fake 100% concentration; sells reduce concentration and a
+        full liquidation passes without any special vacuous branch."""
         if frame.portfolio is None:
             return _result(
                 CheckId.CHECK_04,
@@ -270,8 +370,17 @@ class TreasuryGuardEngine:
             )
         limit = context.investment_policy.concentration_max_fraction
         portfolio = frame.portfolio
-        if portfolio.total_invested_value <= ZERO:
-            return _result(CheckId.CHECK_04, True, "no projected invested market value; vacuous")
+        pool = portfolio.investment_pool_base
+        if pool <= ZERO:
+            if portfolio.total_invested_value <= ZERO:
+                return _result(
+                    CheckId.CHECK_04, True, "no investment pool base and no holdings; vacuous"
+                )
+            return _result(
+                CheckId.CHECK_04,
+                False,
+                "investment pool base is zero but projected holdings exist; fail closed",
+            )
         offenders = sorted(
             symbol
             for symbol, fraction in portfolio.concentration_by_symbol.items()
@@ -280,13 +389,14 @@ class TreasuryGuardEngine:
         passed = not offenders
         if passed:
             detail = (
-                f"projected post-trade concentration within {limit} "
-                f"(denominator {portfolio.total_invested_value})"
+                f"projected concentration within {limit} against investment pool base "
+                f"{pool} (eligible holdings market value + deployable investment cash)"
             )
         else:
             detail = "; ".join(
                 f"{symbol} projected concentration "
-                f"{portfolio.concentration_by_symbol[symbol]} exceeds {limit}"
+                f"{portfolio.concentration_by_symbol[symbol]} exceeds {limit} "
+                f"of investment pool base {pool}"
                 for symbol in offenders
             )
         return _result(CheckId.CHECK_04, passed, detail)
@@ -423,6 +533,13 @@ class TreasuryGuardEngine:
     ) -> PolicyCheckResult:
         if not proposal.sell_legs:
             return _result(CheckId.CHECK_12, True, "no sell legs; vacuous")
+        if frame.calendar_error is not None:
+            return _result(
+                CheckId.CHECK_12,
+                False,
+                f"cannot derive settlement dates for proposed sells: "
+                f"{frame.calendar_error}; CHECK-12 cannot pass (fail closed)",
+            )
         problems = []
         for obligation in frame.liquidity.obligations:
             available = self._post_trade_available(frame, obligation.due_date)
@@ -474,16 +591,27 @@ class TreasuryGuardEngine:
     def _check_15(
         self, proposal: Proposal, context: PolicyContext, frame: _Frame
     ) -> PolicyCheckResult:
-        config = context.investment_policy.preclose_blackout
-        if not config.enabled:
-            return _result(CheckId.CHECK_15, True, "pre-close blackout disabled")
+        """Market session gate (RT-07): trading-day validity is
+        UNCONDITIONAL. A Saturday or exchange holiday fails closed no
+        matter how the blackout is configured; the blackout setting
+        controls only the optional pre-close window on a valid session."""
         now_local = context.execution.now.astimezone(EXCHANGE_TIMEZONE)
-        session = context.calendar.session(now_local.date())
+        try:
+            session = context.calendar.session(now_local.date())
+        except CalendarError:
+            session = None
         if session is None:
             return _result(
                 CheckId.CHECK_15,
                 False,
                 f"no trading session on {now_local.date()}; fail closed",
+            )
+        config = context.investment_policy.preclose_blackout
+        if not config.enabled:
+            return _result(
+                CheckId.CHECK_15,
+                True,
+                f"trading session on {now_local.date()}; pre-close blackout disabled",
             )
         close_local = datetime.combine(
             session.session_date, session.close_time, tzinfo=EXCHANGE_TIMEZONE
@@ -501,20 +629,45 @@ class TreasuryGuardEngine:
     def _check_16(
         self, proposal: Proposal, context: PolicyContext, frame: _Frame
     ) -> PolicyCheckResult:
+        """Long-only with reservation awareness (RT-01).
+
+        Reading only broker ``quantity_available`` is unsafe: an unresolved
+        same-direction SELL that the broker has not yet acknowledged (or an
+        UNKNOWN order) does not reduce it, so two independent sells could
+        each pass and jointly open a short — which the broker allows
+        (``shorting_enabled: true``), so the broker is not a backstop. The
+        bound is therefore the minimum of the broker figure and the
+        reconciled position minus locally reserved unresolved-sell
+        remaining quantity, never a double subtraction of the reservation.
+        """
         problems = []
-        available_by_symbol = {p.symbol: p.quantity_available for p in context.positions}
         for symbol in sorted(frame.projected_quantity_by_symbol):
             projected = frame.projected_quantity_by_symbol[symbol]
             if projected < ZERO:
                 problems.append(f"projected post-trade position negative for {symbol}: {projected}")
+        reserved, undeterminable = sell_reservations(context.unresolved_orders)
+        positions_by_symbol = {p.symbol: p for p in context.positions}
         for symbol in sorted(frame.sell_quantity_by_symbol):
             sell_quantity = frame.sell_quantity_by_symbol[symbol]
-            available = available_by_symbol.get(symbol, ZERO)
+            position = positions_by_symbol.get(symbol)
+            if symbol in undeterminable:
+                problems.append(
+                    f"unresolved SELL of {symbol} has an undeterminable remaining "
+                    f"quantity; no additional sell of this symbol is permitted "
+                    f"(fail closed)"
+                )
+                continue
+            reserved_quantity = reserved.get(symbol, ZERO)
+            available = effective_available_quantity(position, reserved_quantity, False)
             if sell_quantity > available:
+                broker_available = position.quantity_available if position is not None else ZERO
+                reconciled_quantity = position.quantity if position is not None else ZERO
                 problems.append(
                     f"sell quantity {sell_quantity} exceeds reconciled long position "
-                    f"available for liquidation {available} ({symbol}); broker shorting "
-                    f"capability is never policy permission"
+                    f"available for liquidation {available} ({symbol}); reservation-aware "
+                    f"bound = min(broker available {broker_available}, reconciled quantity "
+                    f"{reconciled_quantity} - reserved unresolved sells {reserved_quantity}); "
+                    f"broker shorting capability is never policy permission"
                 )
         passed = not problems
         detail = "long-only invariants hold" if passed else "; ".join(problems)
