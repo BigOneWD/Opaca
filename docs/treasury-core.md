@@ -64,8 +64,10 @@ decide_authority()             authority/engine.py
    `quantity_available` for an acknowledged order. Unresolved SELL states
    (pending/new, accepted/live, partially filled, UNKNOWN, pre-submission
    states) reserve their REMAINING quantity; an undeterminable remaining
-   quantity fails closed for further sells of that symbol. Broker shorting
-   capability is not an input (CHECK-16).
+    quantity fails closed for further sells of that symbol. Broker shorting
+    capability is not an input (CHECK-16). An UNKNOWN same-proposal SELL
+    remains reserved: idempotent recovery means reconcile the same logical
+    order, not resubmit an uncertain trade (NEW-02).
 
    *Orchestration invariant:* two truly simultaneous evaluations against the
    same snapshot still require an ATOMIC SQLite reservation before broker
@@ -82,6 +84,9 @@ decide_authority()             authority/engine.py
        + current deployable investment cash
    ```
 
+   Eligible holdings are symbols on `InvestmentPolicy.permitted_symbols`
+   (NEW-01). A non-whitelisted holding buys no concentration headroom and
+   is not a CHECK-04 offender; CHECK-03 still prohibits trading it.
    Deployable investment cash is the settlement-aware investable cash
    (settled cash minus protected reserve and obligation-committed cash);
    negative investable cash contributes zero. The base is fixed at proposal
@@ -89,6 +94,11 @@ decide_authority()             authority/engine.py
    so unfilled investment cash prevents fake 100% concentrations. Sells
    reduce concentration; a full liquidation passes without a special
    vacuous branch (CHECK-04).
+
+   From a pre-existing breach, CHECK-04 permits **monotonic de-risking**
+   (NEW-03): the projection may remain above the limit only if every
+   pre-existing offender is strictly improved and no previously compliant
+   symbol becomes a new offender. Improvement-based, not a sell exemption.
 7. **Fail closed.** Missing price, missing tradability state, unverified
    environment, undeterminable sell reservation, or a missing/out-of-range
    trading session → violation.

@@ -186,6 +186,7 @@ def investment_pool_base(
     positions: Sequence[Position],
     prices: Mapping[str, Decimal],
     investable_cash: Decimal,
+    permitted_symbols: frozenset[str] | None = None,
 ) -> Decimal:
     """INVESTMENT POOL BASE (SPEC s9 CHECK-04, Amendment G; red-team RT-02).
 
@@ -195,6 +196,13 @@ def investment_pool_base(
         current market value of eligible investment holdings
         + current deployable investment cash
 
+    Eligible investment holdings are the holdings in
+    ``permitted_symbols`` (NEW-01): a non-whitelisted / manual / legacy
+    holding is not investable under policy and must not enlarge the pool —
+    counting it would let an ineligible position buy concentration headroom
+    for permitted symbols. Such holdings are drift/governance events, not
+    CHECK-04 inputs, and must not block treasury activity either.
+
     Deployable investment cash is the settlement-aware investable cash:
     reconciled settled cash minus protected reserve and cash committed to
     obligations. Total corporate cash is NOT part of this denominator, and
@@ -203,6 +211,8 @@ def investment_pool_base(
     """
     holdings_value = ZERO
     for position in positions:
+        if permitted_symbols is not None and position.symbol not in permitted_symbols:
+            continue
         if position.symbol not in prices:
             raise MissingPriceError(position.symbol)
         holdings_value += round_money(position.quantity * prices[position.symbol])
@@ -215,7 +225,13 @@ def project_portfolio(
     orders: Sequence[ProposedOrder],
     prices: Mapping[str, Decimal],
     pool_base: Decimal | None = None,
+    permitted_symbols: frozenset[str] | None = None,
 ) -> PortfolioProjection:
+    """Projected post-trade state. Every held or proposed symbol needs a
+    reference price (fail closed); ``concentration_by_symbol`` is scoped to
+    ``permitted_symbols`` when given (NEW-01): non-whitelisted holdings can
+    be neither offenders nor headroom — CHECK-03 governs trading them and
+    drift procedures govern their existence."""
     existing = {p.symbol: p.quantity for p in positions}
     delta: dict[str, Decimal] = {}
     for order in orders:
@@ -248,6 +264,8 @@ def project_portfolio(
     denominator = pool_base if pool_base is not None else total
     concentration: dict[str, Decimal] = {}
     for position in projected:
+        if permitted_symbols is not None and position.symbol not in permitted_symbols:
+            continue
         if position.projected_market_value > ZERO and denominator > ZERO:
             concentration[position.symbol] = position.projected_market_value / denominator
     return PortfolioProjection(

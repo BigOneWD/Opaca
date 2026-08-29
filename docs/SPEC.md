@@ -60,11 +60,25 @@ protected reserve, obligation-committed cash, and any other non-deployable cash
 are excluded. **Total corporate cash is never the denominator — only
 investment-pool capital belongs in it.**
 
+Eligible investment holdings are holdings whose symbol is on
+`InvestmentPolicy.permitted_symbols`. A non-whitelisted / manual / legacy
+holding is not investable under policy: it must not enlarge the pool (that
+would buy concentration headroom for permitted symbols) and it is not itself
+a CHECK-04 offender. CHECK-03 continues to prohibit proposing a non-permitted
+symbol. Such holdings are drift/governance events, not concentration inputs.
+
 Per-symbol concentration is the projected eligible holding market value divided
 by the investment_pool_base. The base stays the denominator for every
 partial-fill subset, so unfilled investment cash keeps a partial fill from
 showing a fake 100% concentration. Sells reduce concentration, and a full
 liquidation passes without any special vacuous branch.
+
+Monotonic de-risking (Amendment G clarification): from a pre-existing
+concentration breach, a proposal may PASS CHECK-04 with the projection still
+above the limit only if every pre-existing offending symbol is **strictly**
+improved and no previously compliant symbol becomes a new offender. The rule
+is improvement-based, not side-based: there is no blanket sell exemption. A
+proposal that fully cures the breach also PASSes.
 
 All amendments preserve the existing architecture and the Freeze Rule (§23).
 
@@ -579,10 +593,20 @@ including:
 
 Never calculate concentration on proposal amounts alone.
 
+Eligible holdings are those on the policy whitelist. Non-whitelisted holdings
+are excluded from the pool and from CHECK-04 offender scope; they buy no
+headroom and do not themselves block treasury activity. CHECK-03 still
+prohibits proposing a non-permitted symbol.
+
 The investment_pool_base is fixed at proposal evaluation time and remains the
 denominator for every partial-fill subset, so unfilled investment cash stays in
 the pool and a partial fill never shows a fake 100% concentration. Sells reduce
 concentration; a full liquidation passes without a special vacuous branch.
+
+Monotonic de-risking: if a symbol is already above the limit before the
+proposal, CHECK-04 may PASS with the projection still above the limit only
+when every pre-existing offender is strictly improved and no previously
+compliant symbol becomes a new offender. No blanket sell exemption.
 
 Example (deployable investment pool 22,000; SGOV proposal 18,480):
 
@@ -1071,6 +1095,28 @@ Recovery procedure:
 Duplicate prevention takes priority over automatic recovery. Resolution of
 `UNKNOWN_REQUIRES_REVIEW` requires operator action; the system must not auto-trade the
 affected leg.
+
+
+### Idempotent recovery (NEW-02, accepted as designed)
+
+
+An UNKNOWN order is not automatically resubmittable. Deterministic
+`client_order_id` identifies the logical broker order:
+
+1. look up broker state using that ID,
+2. if found, reconcile the existing order,
+3. if truth cannot be established → `UNKNOWN_REQUIRES_REVIEW`,
+4. NEVER automatically submit another order merely because the prior
+   attempt is UNKNOWN.
+
+
+Unresolved same-proposal SELL quantity therefore remains reserved. The
+reservation engine blocking a second sell of that logical order is
+intentional safety behaviour.
+
+
+> Idempotent recovery means reconcile the same logical order, not
+> resubmit an uncertain trade.
 
 
 ## Broker status mapping

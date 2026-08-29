@@ -1,16 +1,25 @@
 """Concentration (CHECK-04): the INVESTMENT POOL BASE is the only
-denominator (SPEC s9 CHECK-04, Amendment G; red-team RT-02).
+denominator (SPEC s9 CHECK-04, Amendment G; red-team RT-02, NEW-01,
+NEW-03).
 
     investment_pool_base =
-        current market value of eligible investment holdings
+        current market value of ELIGIBLE investment holdings
         + current deployable investment cash
 
-Deployable investment cash is the settlement-aware investable cash
-(settled cash minus protected reserve and obligation-committed cash).
-Total corporate cash is NOT part of the denominator. The pool base is
-fixed at proposal evaluation time and stays the denominator for every
-partial-fill subset, so unfilled investment cash keeps a partial fill
-from showing a fake 100% concentration.
+Eligible holdings are the holdings in InvestmentPolicy.permitted_symbols:
+a non-whitelisted / manual / legacy holding buys no concentration headroom
+and is not itself an offender (NEW-01). Deployable investment cash is the
+settlement-aware investable cash (settled cash minus protected reserve and
+obligation-committed cash). Total corporate cash is NOT part of the
+denominator. The pool base is fixed at proposal evaluation time and stays
+the denominator for every partial-fill subset, so unfilled investment cash
+keeps a partial fill from showing a fake 100% concentration.
+
+From a pre-existing breach, CHECK-04 additionally permits monotonic
+de-risking (NEW-03): a proposal may pass with the projection still above
+the limit only if every pre-existing offending symbol is strictly improved
+and no previously compliant symbol becomes a new offender. The rule is
+improvement-based, not side-based: there is no blanket sell exemption.
 """
 
 from __future__ import annotations
@@ -18,13 +27,15 @@ from __future__ import annotations
 from decimal import Decimal
 
 from opaca.domain.models import CheckId, Position, Side
-from opaca.policy.engine import CHECK_ORDER
+from opaca.policy.engine import CHECK_ORDER, PolicyContext
 from opaca.treasury.liquidity import investment_pool_base, project_portfolio
 
 from tests.helpers import evaluate, make_context, make_order, make_proposal
 
 PRICE = Decimal("100.00")
 PRICES = {"SGOV": PRICE, "BIL": PRICE, "SHV": PRICE}
+PRICES_WITH_XYZ = {**PRICES, "XYZ": PRICE}
+PERMITTED = frozenset({"SGOV", "BIL", "SHV"})
 
 #: Default seed against 100,000 opening cash: payroll 24,000 + suppliers
 #: 14,000 + reserve 40,000 leaves exactly 22,000 deployable.
@@ -241,3 +252,166 @@ class TestDecisionShape:
         )
         decision = evaluate(proposal, context)
         assert [r.check_id for r in decision.results] == list(CHECK_ORDER)
+
+
+class TestEligibleHoldingsOnly:
+    """NEW-01: non-whitelisted holdings buy no concentration headroom and
+    are not CHECK-04 offenders."""
+
+    def test_ineligible_holding_does_not_inflate_the_pool(self) -> None:
+        def max_passing_sgov_notional(xyz_value: str) -> Decimal | None:
+            positions: tuple[Position, ...] = ()
+            if Decimal(xyz_value) > 0:
+                qty = Decimal(xyz_value) / PRICE
+                positions = (
+                    Position(
+                        symbol="XYZ",
+                        quantity=qty,
+                        quantity_available=Decimal("0"),
+                        market_value=Decimal("0"),
+                    ),
+                )
+            context = make_context(
+                cash="100000",
+                prices=PRICES_WITH_XYZ,
+                positions=positions,
+                obligations=(),
+                operating_reserve=Decimal("0"),
+            )
+            best: Decimal | None = None
+            candidates = (
+                Decimal("70000"),
+                Decimal("80000"),
+                Decimal("100000"),
+                Decimal("140000"),
+            )
+            for notional in candidates:
+                proposal = make_proposal(
+                    "n1",
+                    [make_order("n1", 0, "SGOV", Side.BUY, str(notional / PRICE), PRICE)],
+                )
+                if evaluate(proposal, context).result_for(CheckId.CHECK_04).passed:
+                    best = notional
+            return best
+
+        assert max_passing_sgov_notional("0") == Decimal("70000")
+        assert max_passing_sgov_notional("100000") == Decimal("70000")
+
+    def test_permitted_existing_holding_is_included_in_the_pool(self) -> None:
+        pool = investment_pool_base(
+            (position("SGOV", "500"),),
+            PRICES,
+            Decimal("100000.00"),
+            PERMITTED,
+        )
+        assert pool == Decimal("150000.00")
+
+    def test_mixed_permitted_and_non_permitted_holdings(self) -> None:
+        positions = (position("SGOV", "300"), position("XYZ", "500"))
+        pool = investment_pool_base(positions, PRICES_WITH_XYZ, Decimal("100000.00"), PERMITTED)
+        assert pool == Decimal("130000.00")
+        context = make_context(
+            cash="100000",
+            prices=PRICES_WITH_XYZ,
+            positions=positions,
+            obligations=(),
+            operating_reserve=Decimal("0"),
+        )
+        at_limit = make_proposal(
+            "n1-mix", [make_order("n1-mix", 0, "SGOV", Side.BUY, "610", PRICE)]
+        )
+        over = make_proposal(
+            "n1-mix-over", [make_order("n1-mix-over", 0, "SGOV", Side.BUY, "620", PRICE)]
+        )
+        assert evaluate(at_limit, context).result_for(CheckId.CHECK_04).passed
+        assert not evaluate(over, context).result_for(CheckId.CHECK_04).passed
+
+    def test_missing_price_for_non_permitted_holding_does_not_contaminate_pool(self) -> None:
+        pool = investment_pool_base(
+            (position("XYZ", "500"), position("SGOV", "100")),
+            PRICES,
+            Decimal("100000.00"),
+            PERMITTED,
+        )
+        assert pool == Decimal("110000.00")
+
+    def test_missing_price_for_permitted_held_symbol_fails_closed(self) -> None:
+        context = make_context(
+            prices={"BIL": PRICE},
+            positions=(position("SGOV", "10"),),
+            obligations=(),
+            operating_reserve=Decimal("0"),
+        )
+        proposal = make_proposal("n1-miss", [make_order("n1-miss", 0, "BIL", Side.BUY, "1", PRICE)])
+        result = evaluate(proposal, context).result_for(CheckId.CHECK_04)
+        assert not result.passed
+        assert "fail closed" in result.detail
+
+    def test_trading_a_non_permitted_symbol_is_still_check_03(self) -> None:
+        context = make_context(
+            cash="100000",
+            prices=PRICES_WITH_XYZ,
+            obligations=(),
+            operating_reserve=Decimal("0"),
+        )
+        proposal = make_proposal("n1-xyz", [make_order("n1-xyz", 0, "XYZ", Side.BUY, "1", PRICE)])
+        assert not evaluate(proposal, context).result_for(CheckId.CHECK_03).passed
+
+
+class TestMonotonicDeRisking:
+    """NEW-03: a pre-existing breach may remain above the limit only while
+    every offender strictly improves and no new offender appears."""
+
+    def _overconcentrated_context(self) -> PolicyContext:
+        return make_context(
+            cash="5000",
+            prices=PRICES,
+            positions=(position("SGOV", "950"),),
+            obligations=(),
+            operating_reserve=Decimal("0"),
+        )
+
+    def test_empty_proposal_from_95_percent_fails(self) -> None:
+        context = self._overconcentrated_context()
+        assert not evaluate(make_proposal("n3z", []), context).result_for(CheckId.CHECK_04).passed
+
+    def test_95_to_85_passes_as_monotonic_de_risking(self) -> None:
+        context = self._overconcentrated_context()
+        proposal = make_proposal("n3a", [make_order("n3a", 0, "SGOV", Side.SELL, "100", PRICE)])
+        result = evaluate(proposal, context).result_for(CheckId.CHECK_04)
+        assert result.passed
+        assert "monotonic de-risking" in result.detail
+
+    def test_95_to_95_fails(self) -> None:
+        context = self._overconcentrated_context()
+        proposal = make_proposal("n3same", [make_order("n3same", 0, "BIL", Side.BUY, "1", PRICE)])
+        assert not evaluate(proposal, context).result_for(CheckId.CHECK_04).passed
+
+    def test_95_to_96_fails(self) -> None:
+        context = self._overconcentrated_context()
+        proposal = make_proposal(
+            "n3worse", [make_order("n3worse", 0, "SGOV", Side.BUY, "10", PRICE)]
+        )
+        assert not evaluate(proposal, context).result_for(CheckId.CHECK_04).passed
+
+    def test_improving_sgov_while_creating_a_new_offender_fails(self) -> None:
+        context = self._overconcentrated_context()
+        proposal = make_proposal(
+            "n3new",
+            [
+                make_order("n3new", 0, "SGOV", Side.SELL, "100", PRICE),
+                make_order("n3new", 1, "BIL", Side.BUY, "750", PRICE),
+            ],
+        )
+        result = evaluate(proposal, context).result_for(CheckId.CHECK_04)
+        assert not result.passed
+        assert "new offender" in result.detail
+
+    def test_full_cure_passes(self) -> None:
+        context = self._overconcentrated_context()
+        proposal = make_proposal(
+            "n3cure", [make_order("n3cure", 0, "SGOV", Side.SELL, "300", PRICE)]
+        )
+        result = evaluate(proposal, context).result_for(CheckId.CHECK_04)
+        assert result.passed
+        assert "monotonic de-risking" not in result.detail

@@ -28,6 +28,7 @@ from decimal import Decimal
 
 import pytest
 from opaca.domain.models import (
+    AuthorityResult,
     CheckId,
     OrderState,
     Position,
@@ -35,9 +36,10 @@ from opaca.domain.models import (
     Side,
     UnresolvedOrder,
 )
+from opaca.policy.client_order_id import deterministic_client_order_id
 from opaca.policy.engine import effective_available_quantity, sell_reservations
 
-from tests.helpers import evaluate, make_context, make_order, make_proposal
+from tests.helpers import decide, evaluate, make_context, make_order, make_proposal
 
 PRICE = Decimal("100.00")
 PRICES = {"SGOV": PRICE}
@@ -279,3 +281,34 @@ class TestCheck16Reservation:
         )
         assert evaluate(sell("p-ok", "40"), context).result_for(CheckId.CHECK_16).passed
         assert not evaluate(sell("p-no", "41"), context).result_for(CheckId.CHECK_16).passed
+
+
+class TestUnknownSameLogicalOrder:
+    def test_unknown_same_logical_sell_remains_reserved(self) -> None:
+        """NEW-02: idempotent recovery means reconcile the same logical
+        order, not resubmit an uncertain trade. An UNKNOWN sell of this
+        proposal still reserves remaining quantity."""
+        client_order_id = deterministic_client_order_id("P1", 0)
+        own = UnresolvedOrder(
+            proposal_id="P1",
+            symbol="SGOV",
+            side=Side.SELL,
+            client_order_id=client_order_id,
+            state=OrderState.UNKNOWN,
+            quantity=Decimal("100"),
+            filled_quantity=Decimal("0"),
+        )
+        context = make_context(
+            prices=PRICES,
+            positions=(position("100"),),
+            unresolved_orders=(own,),
+            obligations=(),
+            operating_reserve=Decimal("0"),
+        )
+        retry = make_proposal("P1", [make_order("P1", 0, "SGOV", Side.SELL, "100", PRICE)])
+        decision = evaluate(retry, context)
+        result = decision.result_for(CheckId.CHECK_16)
+        assert not result.passed
+        assert "reserved unresolved sells 100" in result.detail
+        assert not decision.passed
+        assert decide(retry, context).result is AuthorityResult.REJECT

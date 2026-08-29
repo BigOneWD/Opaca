@@ -57,7 +57,7 @@ from opaca.domain.models import (
     Side,
     UnresolvedOrder,
 )
-from opaca.domain.money import ZERO
+from opaca.domain.money import ZERO, round_money
 from opaca.policy.client_order_id import (
     deterministic_client_order_id,
     is_valid_client_order_id,
@@ -252,12 +252,13 @@ class TreasuryGuardEngine:
             calendar_error = str(exc)
         missing_price: str | None = None
         portfolio: PortfolioProjection | None = None
+        permitted = context.investment_policy.permitted_symbols
         try:
             pool_base = investment_pool_base(
-                context.positions, context.prices, liquidity.investable_cash
+                context.positions, context.prices, liquidity.investable_cash, permitted
             )
             portfolio = project_portfolio(
-                context.positions, proposal.legs, context.prices, pool_base
+                context.positions, proposal.legs, context.prices, pool_base, permitted
             )
         except MissingPriceError as exc:
             missing_price = str(exc.args[0]) if exc.args else "unknown"
@@ -356,11 +357,23 @@ class TreasuryGuardEngine:
         self, proposal: Proposal, context: PolicyContext, frame: _Frame
     ) -> PolicyCheckResult:
         """Concentration against the INVESTMENT POOL BASE (Amendment G,
-        RT-02): eligible investment holdings market value + deployable
+        RT-02): ELIGIBLE investment holdings market value + deployable
         investment cash, fixed at proposal evaluation time. Unfilled
         investment cash stays in the pool, so a partial-fill subset never
         shows a fake 100% concentration; sells reduce concentration and a
-        full liquidation passes without any special vacuous branch."""
+        full liquidation passes without any special vacuous branch.
+
+        Non-whitelisted holdings are excluded from the pool and from the
+        concentration scope entirely (NEW-01): they buy no headroom and are
+        not themselves offenders; CHECK-03 keeps prohibiting trading them.
+
+        Monotonic de-risking (NEW-03, Amendment G clarification): from a
+        pre-existing breach, a proposal may pass with the projection still
+        above the limit only if every pre-existing offending symbol is
+        STRICTLY improved and no previously compliant symbol becomes a new
+        offender. The rule is improvement-based, not side-based: there is
+        no blanket sell exemption.
+        """
         if frame.portfolio is None:
             return _result(
                 CheckId.CHECK_04,
@@ -381,25 +394,60 @@ class TreasuryGuardEngine:
                 False,
                 "investment pool base is zero but projected holdings exist; fail closed",
             )
-        offenders = sorted(
-            symbol
-            for symbol, fraction in portfolio.concentration_by_symbol.items()
-            if fraction > limit
-        )
-        passed = not offenders
-        if passed:
-            detail = (
+        permitted = context.investment_policy.permitted_symbols
+        projected = portfolio.concentration_by_symbol
+        pre_trade: dict[str, Decimal] = {}
+        for position in portfolio.positions:
+            if position.symbol not in permitted or position.existing_quantity <= ZERO:
+                continue
+            existing_value = round_money(position.existing_quantity * position.reference_price)
+            pre_trade[position.symbol] = existing_value / pool
+        pre_offenders = {
+            symbol: fraction for symbol, fraction in pre_trade.items() if fraction > limit
+        }
+        offenders = {symbol: fraction for symbol, fraction in projected.items() if fraction > limit}
+
+        if not offenders:
+            return _result(
+                CheckId.CHECK_04,
+                True,
                 f"projected concentration within {limit} against investment pool base "
-                f"{pool} (eligible holdings market value + deployable investment cash)"
+                f"{pool} (eligible holdings market value + deployable investment cash)",
             )
-        else:
+        if not pre_offenders:
             detail = "; ".join(
-                f"{symbol} projected concentration "
-                f"{portfolio.concentration_by_symbol[symbol]} exceeds {limit} "
+                f"{symbol} projected concentration {offenders[symbol]} exceeds {limit} "
                 f"of investment pool base {pool}"
-                for symbol in offenders
+                for symbol in sorted(offenders)
             )
-        return _result(CheckId.CHECK_04, passed, detail)
+            return _result(CheckId.CHECK_04, False, detail)
+
+        problems = []
+        for symbol in sorted(pre_offenders):
+            projected_fraction = projected.get(symbol, ZERO)
+            if not projected_fraction < pre_offenders[symbol]:
+                problems.append(
+                    f"{symbol} pre-existing breach is not strictly improved "
+                    f"(pre-trade {pre_offenders[symbol]}, projected {projected_fraction})"
+                )
+        for symbol in sorted(set(offenders) - set(pre_offenders)):
+            problems.append(
+                f"{symbol} was compliant pre-trade but becomes a new offender "
+                f"at {offenders[symbol]}"
+            )
+        if problems:
+            return _result(
+                CheckId.CHECK_04,
+                False,
+                "monotonic de-risking not satisfied: " + "; ".join(problems),
+            )
+        return _result(
+            CheckId.CHECK_04,
+            True,
+            f"monotonic de-risking: every pre-existing breach strictly improved and "
+            f"no new offenders against investment pool base {pool} "
+            f"(projected may remain above {limit} only while strictly decreasing)",
+        )
 
     def _check_05(
         self, proposal: Proposal, context: PolicyContext, frame: _Frame
