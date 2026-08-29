@@ -2,13 +2,13 @@
 
 Adversarial tests written to **falsify** the builder's report for
 
-    origin/feat/treasury-core @ d06f8ea7e5f46c50928e331aca916e37b0aa15a1
+    origin/feat/treasury-core @ 5d33a052655324e607b808e8239b78befe94be18
 
 These tests are red-team-only and live on `review/treasury-red-team`.
 They are never added to the builder branch and they do not import from this
 branch — they run against a checkout of the builder commit:
 
-    git worktree add --detach /tmp/tc d06f8ea7e5f46c50928e331aca916e37b0aa15a1
+    git worktree add --detach /tmp/tc 5d33a052655324e607b808e8239b78befe94be18
     OPACA_BACKEND=/tmp/tc/backend pytest -q redteam/
 
 | file | attack class |
@@ -23,27 +23,32 @@ branch — they run against a checkout of the builder commit:
 | `test_p2_interpretations.py` | P2 spec-interpretation consequences |
 | `test_rt_fixes.py` | attacks on the RT-01..RT-10 remediation itself |
 
-## Status against d06f8ea
+## Status against 5d33a05
 
 **119 passed / 0 failed.** The suite is GREEN against correct behaviour.
 
-The 15 tests that characterised RT-01..RT-10 at 2c5a6d8 have been rewritten to
-assert the corrected behaviour. They are genuine regression tests, not vacuous
-ones: run against the pre-fix commit they still fail 15/15, and
-`test_rt_fixes.py` cannot even import there.
+The 15 tests that characterised RT-01..RT-10 at 2c5a6d8 were rewritten at
+d06f8ea to assert the corrected behaviour. At 5d33a05 the two remaining OPEN
+characterisation tests, NEW-01 and NEW-03, have likewise been inverted to
+assert the corrected behaviour:
+
+* `test_NEW01_non_permitted_holding_gives_no_denominator_and_no_headroom`
+  — a non-whitelisted holding must not enlarge the investment pool base, must
+  not buy concentration headroom, and must not be an offender itself.
+* `test_NEW03_monotonic_de_risking_is_allowed_from_a_pre_existing_breach`
+  — from a pre-existing breach the projection may stay above the limit while
+  every pre-existing offender strictly improves and no compliant symbol
+  becomes a new offender (95% -> 85% at a 70% limit PASSES). Non-improving,
+  net-zero, worsening and new-offender cases still FAIL.
+
+Both inverted tests have teeth: run against d06f8ea they fail 2/2
+(NEW-01 measures 140,000 of headroom instead of 70,000; NEW-03's 95% -> 85%
+sell is rejected).
 
     # proves the assertions have teeth
-    OPACA_BACKEND=<worktree-at-2c5a6d8>/backend pytest -q redteam/ \
-        --ignore=redteam/test_rt_fixes.py     # -> 15 failed, 74 passed
+    OPACA_BACKEND=<worktree-at-d06f8ea>/backend pytest -q redteam/test_rt_fixes.py \
+        -k "NEW01 or NEW03"                  # -> 2 failed
 
-### Open characterisation tests
-
-Three tests in `test_rt_fixes.py` pin findings that are still OPEN. They pass
-today because they assert current (defective) behaviour, and they must be
-inverted when the finding is fixed:
-
-* `test_NEW01_non_whitelisted_holding_inflates_the_concentration_denominator`
-* `test_NEW02_idempotent_retry_of_the_same_proposal_is_blocked_by_its_own_reservation`
-* `test_NEW03_improving_but_not_curing_sell_is_rejected_from_an_overconcentrated_state`
-
-Everything else asserts behaviour the red team believes is correct.
+NEW-02 is unchanged and still passes: an UNKNOWN same-logical SELL remains
+reserved / fail-closed. It stays a characterisation test of a deliberate
+conservative choice, not a defect.

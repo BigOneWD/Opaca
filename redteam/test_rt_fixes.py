@@ -49,28 +49,50 @@ def _ctx(**kw):
 
 # =============================================================== NEW FINDINGS
 
-def test_NEW01_non_whitelisted_holding_inflates_the_concentration_denominator():
-    """ATTACK: Amendment G says the denominator is 'eligible investment
-    holdings'. investment_pool_base() iterates ALL positions without
-    consulting InvestmentPolicy.permitted_symbols, so a holding in a
-    NON-permitted symbol enlarges the pool and buys concentration headroom
-    in a permitted one."""
+def test_NEW01_non_permitted_holding_gives_no_denominator_and_no_headroom():
+    """NEW-01 corrected behaviour: a holding in a NON-permitted symbol is not an
+    eligible investment holding. It must not enter the investment pool base, it
+    must not buy concentration headroom for a permitted symbol, and it must not
+    become an offender in its own right. CHECK-03 keeps prohibiting trading it."""
+
     def max_passing_buy(xyz_value):
         positions = ()
         if xyz_value:
             positions = (Position("XYZ", Decimal(xyz_value) / Decimal("100"),
-                                  Decimal("0"), Decimal("0")),)
+                                  Decimal("0"), Decimal(xyz_value)),)
         ctx = _ctx(cash="100000", positions=positions)
-        best = None
-        for notional in (70000, 80000, 100000, 120000, 140000):
+        passing = []
+        for notional in (70000, 70001, 80000, 100000, 120000, 140000, 1000000):
             prop = make_proposal("n1", [make_order(
                 "n1", 0, "SGOV", Side.BUY, str(Decimal(notional) / Decimal("100")), "100.00")])
             if evaluate(prop, ctx).result_for(CheckId.CHECK_04).passed:
-                best = notional
-        return best
+                passing.append(notional)
+        return max(passing) if passing else None
 
-    assert max_passing_buy(0) == 70000            # 70% of a 100,000 pool
-    assert max_passing_buy(100000) == 140000      # XYZ doubled the pool -> doubled the budget
+    # 70% of a 100,000 pool, with no ineligible holding in sight
+    assert max_passing_buy(0) == 70000
+    # the SAME budget however large the ineligible holding is: no headroom bought
+    assert max_passing_buy(100000) == 70000
+    assert max_passing_buy(1000000) == 70000
+    assert max_passing_buy(10000000) == 70000
+
+    # and the denominator itself is unmoved by the ineligible holding
+    def pool_base(positions):
+        ctx = _ctx(cash="100000", positions=positions)
+        prop = make_proposal("n1c", [make_order("n1c", 0, "SGOV", Side.BUY, "1", "100.00")])
+        detail = evaluate(prop, ctx).result_for(CheckId.CHECK_04).detail
+        return detail.split("investment pool base ")[1].split(" ")[0]
+
+    xyz = Position("XYZ", Decimal("100000"), Decimal("0"), Decimal("10000000"))
+    assert pool_base(()) == pool_base((xyz,)) == "100000.00"
+
+    # an ineligible holding that dwarfs the pool is NOT itself an offender and
+    # must not block otherwise-compliant treasury activity
+    sg = Position("SGOV", Decimal("100"), Decimal("100"), Decimal("10000"))
+    ctx = _ctx(cash="1", operating_reserve=Decimal("1"), positions=(sg, xyz))
+    keep = make_proposal("n1d", [make_order("n1d", 0, "SGOV", Side.SELL, "1", "100.00")])
+    assert evaluate(keep, ctx).result_for(CheckId.CHECK_04).passed
+
     # XYZ is genuinely not investable under policy:
     ctx = _ctx(cash="100000")
     xyz_buy = make_proposal("n1b", [make_order("n1b", 0, "XYZ", Side.BUY, "1", "100.00")])
@@ -95,18 +117,58 @@ def test_NEW02_idempotent_retry_of_the_same_proposal_is_blocked_by_its_own_reser
     assert "reserved unresolved sells 100" in r.detail
 
 
-def test_NEW03_improving_but_not_curing_sell_is_rejected_from_an_overconcentrated_state():
-    """ATTACK: CHECK-04 is absolute, not marginal. From a pre-existing
-    breach, only a sell large enough to cure it in one step is allowed; a
-    smaller sell that strictly improves concentration is rejected."""
-    sg = Position("SGOV", Decimal("1000"), Decimal("1000"), Decimal("100000"))
-    ctx = _ctx(cash="1", positions=(sg,))
-    # pre-existing state is already over the limit
-    assert not evaluate(make_proposal("n3z", []), ctx).result_for(CheckId.CHECK_04).passed
-    improving = make_proposal("n3a", [make_order("n3a", 0, "SGOV", Side.SELL, "100", "100.00")])
-    curing = make_proposal("n3b", [make_order("n3b", 0, "SGOV", Side.SELL, "300", "100.00")])
-    assert not evaluate(improving, ctx).result_for(CheckId.CHECK_04).passed
-    assert evaluate(curing, ctx).result_for(CheckId.CHECK_04).passed
+def test_NEW03_monotonic_de_risking_is_allowed_from_a_pre_existing_breach():
+    """NEW-03 corrected behaviour: from a PRE-EXISTING concentration breach the
+    projection may remain above the limit provided every pre-existing offender
+    STRICTLY improves and no previously compliant symbol becomes a new
+    offender. 95% -> 85% against a 70% limit is a PASS (monotonic de-risking).
+
+    The rule is improvement-based, not side-based: a sell that does not improve
+    an offender, or that creates a new one, must still FAIL."""
+    def state():
+        sg = Position("SGOV", Decimal("950"), Decimal("950"), Decimal("95000"))
+        bi = Position("BIL", Decimal("50"), Decimal("50"), Decimal("5000"))
+        return _ctx(cash="1", operating_reserve=Decimal("1"), positions=(sg, bi))
+
+    ctx = state()
+    # pool base is 100,000: SGOV is pre-existing at 95%, BIL compliant at 5%
+    noop = evaluate(make_proposal("n3z", []), ctx).result_for(CheckId.CHECK_04)
+    assert not noop.passed, "a no-op from a breached state must not pass"
+    assert "0.95" in noop.detail, noop.detail        # 95,000 / 100,000 pool base
+
+    def check04(pid, legs):
+        return evaluate(make_proposal(pid, legs), ctx).result_for(CheckId.CHECK_04)
+
+    # 95% -> 85%: still above the 70% limit, but strictly improving => PASS
+    improving = check04("n3a", [make_order("n3a", 0, "SGOV", Side.SELL, "100", "100.00")])
+    assert improving.passed, improving.detail
+    assert "monotonic" in improving.detail
+
+    # 95% -> 70% (exactly at the limit) and 95% -> 65% both PASS
+    assert check04("n3b", [make_order("n3b", 0, "SGOV", Side.SELL, "250", "100.00")]).passed
+    assert check04("n3c", [make_order("n3c", 0, "SGOV", Side.SELL, "300", "100.00")]).passed
+
+    # full liquidation of the offender PASSES
+    assert check04("n3d", [make_order("n3d", 0, "SGOV", Side.SELL, "950", "100.00")]).passed
+
+    # --- the rule still has teeth -------------------------------------------
+    # selling something else leaves the offender untouched => FAIL
+    stale = check04("n3e", [make_order("n3e", 0, "BIL", Side.SELL, "50", "100.00")])
+    assert not stale.passed and "not strictly improved" in stale.detail
+
+    # a net-zero round trip is not an improvement => FAIL
+    flat = check04("n3f", [make_order("n3f", 0, "SGOV", Side.SELL, "100", "100.00"),
+                           make_order("n3f", 1, "SGOV", Side.BUY, "100", "100.00")])
+    assert not flat.passed and "not strictly improved" in flat.detail
+
+    # buying MORE of the offender => FAIL
+    worse = check04("n3g", [make_order("n3g", 0, "SGOV", Side.BUY, "10", "100.00")])
+    assert not worse.passed and "not strictly improved" in worse.detail
+
+    # improving the offender while creating a NEW one => FAIL
+    swap = check04("n3h", [make_order("n3h", 0, "SGOV", Side.SELL, "300", "100.00"),
+                           make_order("n3h", 1, "BIL", Side.BUY, "700", "100.00")])
+    assert not swap.passed and "new offender" in swap.detail
 
 
 # ====================================================== RT-01 reservation logic
