@@ -1,4 +1,17 @@
-# Treasury Core — red-team suite
+# Opaca — red-team suite
+
+Two phases of adversarial review live here:
+
+* `redteam/*.py` + `closeout_bc5fcda/` — **Treasury Core** (`feat/treasury-core`)
+* `reconciliation_3fdabf3/` — **Phase 2 reconciliation state + SQLite atomic
+  reservation** (`feat/reconciliation-state`)
+
+Each subdirectory carries its own README, and every suite runs against a
+checkout of the commit it reviews, never against this branch.
+
+---
+
+## Treasury Core — red-team suite
 
 Adversarial tests written to **falsify** the builder's report for
 
@@ -84,3 +97,71 @@ sell is rejected).
 NEW-02 is unchanged and still passes: an UNKNOWN same-logical SELL remains
 reserved / fail-closed. It stays a characterisation test of a deliberate
 conservative choice, not a defect.
+
+---
+
+## Phase 2 — reconciliation state @ 3fdabf3
+
+Target: `origin/feat/reconciliation-state @ 3fdabf3bcbe3e0d8c8ccfb5a9feedad584c4b6e2`
+(`test: add reconciliation failure, concurrency guards, and docs`), on base
+`main @ b940c719` (tag `treasury-core-complete`).
+
+    git worktree add --detach /tmp/rc 3fdabf3bcbe3e0d8c8ccfb5a9feedad584c4b6e2
+    OPACA_BACKEND=/tmp/rc/backend pytest -q redteam/reconciliation_3fdabf3
+    #   -> 190 passed, 21 failed
+    OPACA_BACKEND=/tmp/rc/backend pytest -q redteam/reconciliation_3fdabf3 -k "not FINDING"
+    #   -> 190 passed
+
+**190 passed / 21 findings.** Verdict: **PASS WITH FINDINGS**,
+**FIX THEN RETEST** — not merged.
+
+Every one of the 21 failures is a deliberate `pytest.fail("FINDING …")` marker
+placed after its invariant assertions held; the message is the finding. Both
+figures are deterministic across repeated runs and identical under `python -O`.
+
+Builder gates all reproduce at the target: 273 passed / 1 skipped overall
+(230 Treasury Core regression, 43 new + 1 live-paper skipped), ruff clean,
+`ruff format --check` clean on 58 files, `mypy --strict` clean on 58 files,
+`git diff --check` exit 0, 0 bare `assert` in `backend/opaca/`, and a credential
+scan whose single hit is the literal env-var *name* `"APCA_API_SECRET_KEY"`.
+
+Teeth: with the reservation mechanism monkeypatched out, two concurrent
+`SELL 60` proposals reserve 120 shares of a 100-share position and two buys
+deploy 30,005.62 against 22,000 of deployable cash (`test_teeth.py`). The green
+concurrency results are detections, not vacuous passes.
+
+| area | verdict |
+| --- | --- |
+| atomic sell reservation | PASS |
+| atomic cash reservation | PASS |
+| stale snapshot | FAIL |
+| idempotency (capacity) | PASS |
+| scenario seed-once | PASS |
+| SQLite durability | PASS |
+| read-only Alpaca guarantee | FAIL |
+| reconciliation fail-closed | FAIL (replay path only) |
+
+Three items are named as must-fix before merge, each because the execution
+phase will build on it:
+
+1. **P0-1** — the idempotent-replay branch returns `is_auto=True` with the
+   reconciliation-status, stale-snapshot and kill-switch gates all skipped.
+2. **P0-2** — no maximum snapshot age, and `expected_snapshot_version` is
+   optional, so the staleness guard is caller-supplied.
+3. **P1-1** — the read-only gateway retains a mutable `TradingClient` on
+   `_client`, and the mutation blacklist misses `cancel_order_by_id` /
+   `replace_order_by_id`.
+
+No broker execution path may be added until P0-1 and P0-2 are closed. Nothing
+found here can place a trade at this commit: no submission path exists.
+
+Cross-check — the whole tree against the Phase 2 target:
+
+    OPACA_BACKEND=/tmp/rc/backend pytest -q redteam/
+    #   -> 404 passed, 21 failed   (214 treasury-core + 190 Phase 2 invariants,
+    #                               plus the 21 Phase 2 FINDING markers)
+
+The 214 treasury-core tests are unchanged and still green at `3fdabf3`, which
+confirms Phase 2 touched no Treasury Core behaviour.
+
+Full report: `claude/reconciliation-state-redteam-3fdabf3.md`.
