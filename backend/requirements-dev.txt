@@ -1,0 +1,15 @@
+# Deterministic dev/gate toolchain for the treasury core.
+#
+# Baseline interpreter: CPython 3.11 (red-team toolchain finding: mypy >= 2.x
+# no longer supports a Python 3.9 checking target; the project baseline was
+# moved to 3.11 to keep the gates reproducible).
+#
+# Recreate the exact gate environment with:
+#   python3.11 -m venv .venv
+#   .venv/bin/python -m pip install --upgrade pip
+#   .venv/bin/python -m pip install -r requirements-dev.txt
+#
+# Verified gate versions (builder + auditor must match):
+mypy==2.3.1
+pytest==9.1.1
+ruff==0.16.5
