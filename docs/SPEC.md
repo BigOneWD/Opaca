@@ -854,10 +854,12 @@ safely, additional sells of that symbol fail closed.
 
 Orchestration invariant NOT solved by the stateless engine alone: two truly
 simultaneous evaluations against the same snapshot still require an ATOMIC
-SQLite reservation before broker submission. No broker execution may be added
-until the execution layer performs `evaluate -> reserve -> persist` under a
-single-writer transaction. The stateless engine alone does not solve
-simultaneous callers.
+SQLite reservation before broker submission. The reconciliation-state layer
+performs `evaluate -> reserve -> persist` under a single-writer
+`BEGIN IMMEDIATE` transaction against the latest reconciled snapshot.
+Broker execution (submit/cancel/replace) is still NOT implemented; a later
+execution phase may submit only after a fresh reservation against current
+state. The stateless engine alone does not solve simultaneous callers.
 
 
 ---
