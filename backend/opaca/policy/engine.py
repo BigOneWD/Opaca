@@ -31,6 +31,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from types import MappingProxyType
 from zoneinfo import ZoneInfo
 
 from opaca.authority.engine import (
@@ -57,12 +58,13 @@ from opaca.domain.models import (
     Side,
     UnresolvedOrder,
 )
-from opaca.domain.money import ZERO, round_money
+from opaca.domain.money import ZERO, require_positive_decimal, round_money
 from opaca.policy.client_order_id import (
     deterministic_client_order_id,
     is_valid_client_order_id,
 )
 from opaca.treasury.liquidity import (
+    LedgerInconsistencyError,
     LiquidityProjection,
     MissingPriceError,
     PortfolioProjection,
@@ -101,7 +103,13 @@ SOFT_CHECKS: frozenset[CheckId] = frozenset({CheckId.CHECK_07})
 
 @dataclass(frozen=True)
 class PolicyContext:
-    """All authoritative inputs for one evaluation, reconciled upstream."""
+    """All authoritative inputs for one evaluation, reconciled upstream.
+
+    Every reference price must already be a strictly positive finite Decimal
+    within money magnitude limits. Float, bool, string, None, NaN, Infinity,
+    zero, negative, and oversized values are rejected at this boundary —
+    they are never coerced, and they can never reach an AUTO decision.
+    """
 
     broker: BrokerCashState
     positions: tuple[Position, ...]
@@ -116,6 +124,12 @@ class PolicyContext:
     unresolved_orders: tuple[UnresolvedOrder, ...]
     autonomous_history: tuple[AutonomousExecution, ...]
     calendar: TradingCalendar
+
+    def __post_init__(self) -> None:
+        validated = {
+            symbol: require_positive_decimal(price) for symbol, price in self.prices.items()
+        }
+        object.__setattr__(self, "prices", MappingProxyType(validated))
 
 
 def _result(check_id: CheckId, passed: bool, detail: str) -> PolicyCheckResult:
@@ -179,7 +193,7 @@ def effective_available_quantity(
 @dataclass(frozen=True)
 class _Frame:
     as_of_date: date
-    liquidity: LiquidityProjection
+    liquidity: LiquidityProjection | None
     proposed_sell_events: tuple[SettlementEvent, ...]
     portfolio: PortfolioProjection | None
     missing_price_symbol: str | None
@@ -187,6 +201,16 @@ class _Frame:
     projected_quantity_by_symbol: Mapping[str, Decimal]
     sell_quantity_by_symbol: Mapping[str, Decimal]
     calendar_error: str | None = None
+    ledger_error: str | None = None
+
+
+def _ledger_fail(check_id: CheckId, frame: _Frame) -> PolicyCheckResult:
+    detail = frame.ledger_error or "liquidity projection unavailable"
+    return _result(
+        check_id,
+        False,
+        f"ledger inconsistent: {detail} (fail closed)",
+    )
 
 
 class TreasuryGuardEngine:
@@ -235,13 +259,18 @@ class TreasuryGuardEngine:
 
     def _build_frame(self, proposal: Proposal, context: PolicyContext) -> _Frame:
         as_of_date = context.execution.now.date()
-        liquidity = compute_liquidity(
-            broker=context.broker,
-            obligations=context.obligations,
-            settlement_events=context.settlement_events,
-            operating_reserve=context.liquidity_policy.operating_reserve,
-            as_of=as_of_date,
-        )
+        ledger_error: str | None = None
+        liquidity: LiquidityProjection | None = None
+        try:
+            liquidity = compute_liquidity(
+                broker=context.broker,
+                obligations=context.obligations,
+                settlement_events=context.settlement_events,
+                operating_reserve=context.liquidity_policy.operating_reserve,
+                as_of=as_of_date,
+            )
+        except LedgerInconsistencyError as exc:
+            ledger_error = str(exc)
         calendar_error: str | None = None
         proposed_sell_events: tuple[SettlementEvent, ...] = ()
         try:
@@ -253,15 +282,16 @@ class TreasuryGuardEngine:
         missing_price: str | None = None
         portfolio: PortfolioProjection | None = None
         permitted = context.investment_policy.permitted_symbols
-        try:
-            pool_base = investment_pool_base(
-                context.positions, context.prices, liquidity.investable_cash, permitted
-            )
-            portfolio = project_portfolio(
-                context.positions, proposal.legs, context.prices, pool_base, permitted
-            )
-        except MissingPriceError as exc:
-            missing_price = str(exc.args[0]) if exc.args else "unknown"
+        if liquidity is not None:
+            try:
+                pool_base = investment_pool_base(
+                    context.positions, context.prices, liquidity.investable_cash, permitted
+                )
+                portfolio = project_portfolio(
+                    context.positions, proposal.legs, context.prices, pool_base, permitted
+                )
+            except MissingPriceError as exc:
+                missing_price = str(exc.args[0]) if exc.args else "unknown"
 
         existing = {p.symbol: p.quantity for p in context.positions}
         projected_qty: dict[str, Decimal] = dict(existing)
@@ -283,10 +313,12 @@ class TreasuryGuardEngine:
             projected_quantity_by_symbol=projected_qty,
             sell_quantity_by_symbol=sell_qty,
             calendar_error=calendar_error,
+            ledger_error=ledger_error,
         )
 
-    def _post_trade_available(self, frame: _Frame, day: date) -> Decimal:
-        liquidity = frame.liquidity
+    def _post_trade_available(
+        self, liquidity: LiquidityProjection, frame: _Frame, day: date
+    ) -> Decimal:
         extra = sum(
             (e.amount for e in frame.proposed_sell_events if e.settlement_date <= day), ZERO
         )
@@ -306,7 +338,10 @@ class TreasuryGuardEngine:
     def _check_01(
         self, proposal: Proposal, context: PolicyContext, frame: _Frame
     ) -> PolicyCheckResult:
-        investable = frame.liquidity.investable_cash
+        liquidity = frame.liquidity
+        if liquidity is None:
+            return _ledger_fail(CheckId.CHECK_01, frame)
+        investable = liquidity.investable_cash
         passed = frame.buy_notional <= investable
         return _result(
             CheckId.CHECK_01,
@@ -317,6 +352,9 @@ class TreasuryGuardEngine:
     def _check_02(
         self, proposal: Proposal, context: PolicyContext, frame: _Frame
     ) -> PolicyCheckResult:
+        liquidity = frame.liquidity
+        if liquidity is None:
+            return _ledger_fail(CheckId.CHECK_02, frame)
         if frame.calendar_error is not None:
             return _result(
                 CheckId.CHECK_02,
@@ -324,18 +362,18 @@ class TreasuryGuardEngine:
                 f"cannot derive proposed-sell settlement dates: {frame.calendar_error} "
                 f"(fail closed)",
             )
-        reserve = frame.liquidity.operating_reserve
+        reserve = liquidity.operating_reserve
         dates = {frame.as_of_date}
-        dates.update(row.on_date for row in frame.liquidity.schedule)
+        dates.update(row.on_date for row in liquidity.schedule)
         dates.update(e.settlement_date for e in frame.proposed_sell_events)
-        worst_day = None
-        worst_value = None
-        for day in sorted(dates):
-            available = self._post_trade_available(frame, day)
-            if worst_value is None or available < worst_value:
-                worst_value = available
-                worst_day = day
-        assert worst_value is not None
+        ranked = [(self._post_trade_available(liquidity, frame, day), day) for day in dates]
+        if not ranked:
+            return _result(
+                CheckId.CHECK_02,
+                False,
+                "cannot determine worst projected liquidity (fail closed)",
+            )
+        worst_value, worst_day = min(ranked)
         passed = worst_value >= reserve
         return _result(
             CheckId.CHECK_02,
@@ -374,6 +412,8 @@ class TreasuryGuardEngine:
         offender. The rule is improvement-based, not side-based: there is
         no blanket sell exemption.
         """
+        if frame.liquidity is None:
+            return _ledger_fail(CheckId.CHECK_04, frame)
         if frame.portfolio is None:
             return _result(
                 CheckId.CHECK_04,
@@ -468,7 +508,10 @@ class TreasuryGuardEngine:
     def _check_06(
         self, proposal: Proposal, context: PolicyContext, frame: _Frame
     ) -> PolicyCheckResult:
-        ceiling = frame.liquidity.funding_ceiling
+        liquidity = frame.liquidity
+        if liquidity is None:
+            return _ledger_fail(CheckId.CHECK_06, frame)
+        ceiling = liquidity.funding_ceiling
         passed = frame.buy_notional <= ceiling
         return _result(
             CheckId.CHECK_06,
@@ -560,6 +603,9 @@ class TreasuryGuardEngine:
     def _check_11(
         self, proposal: Proposal, context: PolicyContext, frame: _Frame
     ) -> PolicyCheckResult:
+        liquidity = frame.liquidity
+        if liquidity is None:
+            return _ledger_fail(CheckId.CHECK_11, frame)
         if frame.portfolio is None:
             return _result(
                 CheckId.CHECK_11,
@@ -567,7 +613,7 @@ class TreasuryGuardEngine:
                 "cannot determine leverage dependence: missing reference price for "
                 f"{frame.missing_price_symbol} (fail closed)",
             )
-        settled = frame.liquidity.settled_cash
+        settled = liquidity.settled_cash
         passed = frame.buy_notional <= settled
         return _result(
             CheckId.CHECK_11,
@@ -581,6 +627,9 @@ class TreasuryGuardEngine:
     ) -> PolicyCheckResult:
         if not proposal.sell_legs:
             return _result(CheckId.CHECK_12, True, "no sell legs; vacuous")
+        liquidity = frame.liquidity
+        if liquidity is None:
+            return _ledger_fail(CheckId.CHECK_12, frame)
         if frame.calendar_error is not None:
             return _result(
                 CheckId.CHECK_12,
@@ -589,8 +638,8 @@ class TreasuryGuardEngine:
                 f"{frame.calendar_error}; CHECK-12 cannot pass (fail closed)",
             )
         problems = []
-        for obligation in frame.liquidity.obligations:
-            available = self._post_trade_available(frame, obligation.due_date)
+        for obligation in liquidity.obligations:
+            available = self._post_trade_available(liquidity, frame, obligation.due_date)
             if available < ZERO:
                 settlement_dates = sorted({e.settlement_date for e in frame.proposed_sell_events})
                 problems.append(

@@ -193,3 +193,26 @@ class TestBoundedNextTradingDay:
     def test_rule_calendar_settlement_at_end_of_supported_range_fails_closed(self) -> None:
         with pytest.raises(CalendarError):
             US_TRADING_CALENDAR.settlement_date(date(2027, 12, 31))
+
+
+class TestWalkerInputRange:
+    """The input date of next_trading_day / add_trading_days / settlement_date
+    is range-checked immediately; walking candidates is not enough."""
+
+    def test_next_trading_day_rejects_input_before_supported_range(self) -> None:
+        with pytest.raises(CalendarError):
+            US_TRADING_CALENDAR.next_trading_day(date(2024, 12, 31))
+
+    def test_add_trading_days_rejects_input_after_supported_range(self) -> None:
+        with pytest.raises(CalendarError):
+            US_TRADING_CALENDAR.add_trading_days(date(2028, 1, 1), 1)
+        with pytest.raises(CalendarError):
+            US_TRADING_CALENDAR.add_trading_days(date(2024, 12, 31), 0)
+
+    def test_settlement_date_rejects_input_before_supported_range(self) -> None:
+        with pytest.raises(CalendarError):
+            US_TRADING_CALENDAR.settlement_date(date(2024, 6, 3))
+
+    def test_weekend_inside_supported_range_still_rolls_forward(self) -> None:
+        assert US_TRADING_CALENDAR.settlement_date(date(2026, 8, 29)) == date(2026, 8, 31)
+        assert US_TRADING_CALENDAR.settlement_date(date(2026, 8, 30)) == date(2026, 8, 31)

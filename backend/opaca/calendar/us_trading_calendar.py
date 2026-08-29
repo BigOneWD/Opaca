@@ -227,5 +227,17 @@ class USTradingCalendar(TradingCalendar):
     def last_supported_date(self) -> date | None:
         return self._supported_end
 
+    def next_trading_day(self, day: date) -> date:
+        self._require_supported(day)
+        return super().next_trading_day(day)
+
+    def add_trading_days(self, day: date, count: int) -> date:
+        self._require_supported(day)
+        return super().add_trading_days(day, count)
+
+    def settlement_date(self, trade_date: date, cycle: int = 1) -> date:
+        self._require_supported(trade_date)
+        return super().settlement_date(trade_date, cycle)
+
 
 US_TRADING_CALENDAR = USTradingCalendar()

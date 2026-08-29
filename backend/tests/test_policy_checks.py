@@ -4,7 +4,7 @@ opposing orders (21), pre-close blackout (22), plus CHECK-03/05/08/09/13.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -16,6 +16,7 @@ from opaca.domain.models import (
     BrokerEnvironment,
     CheckId,
     OrderState,
+    SettlementEvent,
     Side,
     UnresolvedOrder,
 )
@@ -24,6 +25,7 @@ from opaca.policy.client_order_id import (
     deterministic_client_order_id,
     is_valid_client_order_id,
 )
+from opaca.treasury.liquidity import LedgerInconsistencyError
 
 from tests.helpers import (
     DEFAULT_NOW,
@@ -494,6 +496,51 @@ class TestRunawayLimit:
             "prop-runaway-3", [make_order("prop-runaway-3", 0, "SGOV", Side.BUY, "10", PRICE)]
         )
         assert evaluate(proposal, context).result_for(CheckId.CHECK_13).passed
+
+
+class TestLedgerInconsistencyFailsClosed:
+    def test_evaluate_and_decide_do_not_raise_and_reject(self) -> None:
+        event = SettlementEvent(
+            event_id="inconsistent",
+            symbol="SGOV",
+            trade_date=date(2026, 8, 28),
+            settlement_date=date(2026, 9, 2),
+            amount=Decimal("5000.00"),
+        )
+        context = make_context(
+            prices=PRICES,
+            cash=Decimal("1000.00"),
+            settlement_events=(event,),
+            obligations=(),
+            operating_reserve=Decimal("0"),
+        )
+        proposal = make_proposal(
+            "prop-ledger", [make_order("prop-ledger", 0, "SGOV", Side.BUY, "1", PRICE)]
+        )
+        try:
+            decision = evaluate(proposal, context)
+        except LedgerInconsistencyError:
+            pytest.fail("LedgerInconsistencyError escaped evaluate()")
+        for check_id in (CheckId.CHECK_01, CheckId.CHECK_02, CheckId.CHECK_11):
+            result = decision.result_for(check_id)
+            assert not result.passed
+            assert "ledger inconsistent" in result.detail
+            assert "fail closed" in result.detail
+        assert not decision.passed
+        try:
+            authority = decide(proposal, context)
+        except LedgerInconsistencyError:
+            pytest.fail("LedgerInconsistencyError escaped decide()")
+        assert authority.result is AuthorityResult.REJECT
+
+    def test_check_02_still_reports_worst_projected_liquidity(self) -> None:
+        context = make_context(prices=PRICES, obligations=(), operating_reserve=Decimal("0"))
+        proposal = make_proposal(
+            "prop-check02", [make_order("prop-check02", 0, "SGOV", Side.BUY, "1", PRICE)]
+        )
+        result = evaluate(proposal, context).result_for(CheckId.CHECK_02)
+        assert result.passed
+        assert "worst projected liquidity" in result.detail
 
 
 class TestMissingPriceFailsClosed:

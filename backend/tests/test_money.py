@@ -16,6 +16,7 @@ from opaca.domain.money import (
     MAGNITUDE_LIMIT,
     MoneyError,
     money,
+    require_positive_decimal,
     round_budget,
     round_money,
     round_quantity,
@@ -93,3 +94,25 @@ class TestNoFloatSupport:
             round_money(1.5)  # type: ignore[arg-type]
         with pytest.raises(MoneyError):
             round_quantity(1.5)  # type: ignore[arg-type]
+
+
+class TestRequirePositiveDecimal:
+    def test_valid_decimal_is_accepted(self) -> None:
+        assert require_positive_decimal(Decimal("100.69")) == Decimal("100.69")
+
+    def test_zero_negative_nan_infinity_and_oversized_are_rejected(self) -> None:
+        for bad in (
+            Decimal("0"),
+            Decimal("-1"),
+            Decimal("NaN"),
+            Decimal("Infinity"),
+            Decimal("-Infinity"),
+            MAGNITUDE_LIMIT,
+        ):
+            with pytest.raises(MoneyError):
+                require_positive_decimal(bad)
+
+    def test_non_decimal_types_are_not_coerced(self) -> None:
+        for bad in (100.69, True, "100.69", None, 100):
+            with pytest.raises(MoneyError):
+                require_positive_decimal(bad)

@@ -68,6 +68,19 @@ def positive_money(value: str | int | Decimal) -> Decimal:
     return result
 
 
+def require_positive_decimal(value: object) -> Decimal:
+    """Validate a value that must already be a strictly positive finite Decimal.
+
+    Unlike ``money()`` / ``positive_money()``, strings and ints are not
+    coerced. Float, bool, ``None``, NaN, Infinity, zero, negative, and
+    oversized magnitudes are rejected. Used at the PolicyContext price
+    boundary so invalid reference prices cannot reach an AUTO decision.
+    """
+    if not isinstance(value, Decimal):
+        raise MoneyError(f"value must be a Decimal instance, got {type(value).__name__}")
+    return positive_money(value)
+
+
 def _quantize(
     amount: Decimal, increment: Decimal, rounding: str, value: str | int | Decimal
 ) -> Decimal:

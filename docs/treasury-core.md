@@ -99,9 +99,15 @@ decide_authority()             authority/engine.py
    (NEW-03): the projection may remain above the limit only if every
    pre-existing offender is strictly improved and no previously compliant
    symbol becomes a new offender. Improvement-based, not a sell exemption.
-7. **Fail closed.** Missing price, missing tradability state, unverified
-   environment, undeterminable sell reservation, or a missing/out-of-range
-   trading session → violation.
+7. **Fail closed.** Missing or invalid reference price, missing tradability
+   state, unverified environment, undeterminable sell reservation, ledger
+   inconsistency, or a missing/out-of-range trading session → violation.
+   `PolicyContext.prices` must be strictly positive finite `Decimal` values
+   within money magnitude limits; float/bool/string/None/NaN/Infinity/zero/
+   negative/oversized prices are rejected at the domain boundary and cannot
+   reach AUTO. `LedgerInconsistencyError` from `compute_liquidity` is
+   translated at the frame/policy boundary into failed CHECK-01/02/11 (and
+   other liquidity-dependent checks); it never escapes `evaluate()`/`decide()`.
 
 ## Money and rounding
 
@@ -115,6 +121,9 @@ decide_authority()             authority/engine.py
   rejected with `MoneyError` at the validation boundary, and every quantize
   boundary converts `decimal.InvalidOperation` to `MoneyError`. A raw
   `InvalidOperation` never escapes a public money function.
+* Reference prices (`PolicyContext.prices`) use `require_positive_decimal`:
+  already a `Decimal`, then `positive_money`. Strings and ints are not
+  coerced.
 * Scenario seeding rounds each absolute amount DOWN to cents; the investable
   surplus is the exact residual, so parts always sum to opening cash.
 
@@ -129,7 +138,10 @@ CHECK-12 applies only to proposals with sell legs; coverage is evaluated per
 obligation due date on the derived schedule (settled cash + proceeds settling
 by the due date + proposed proceeds − obligations due). When the calendar
 cannot derive a settlement date (e.g. outside its supported range), CHECK-02
-and CHECK-12 fail closed.
+and CHECK-12 fail closed. When derived settled cash is negative
+(`LedgerInconsistencyError`), CHECK-01 / CHECK-02 / CHECK-11 fail closed
+with the diagnostic retained for audit; liquidity is never fabricated.
+Authority is REJECT.
 
 CHECK-15 (RT-07) is a market session gate first and a blackout second:
 trading-day validity is unconditional — Saturday/Sunday/exchange holiday →
@@ -156,7 +168,11 @@ evaluation.
 the four dimensions (per-order, per-proposal aggregate, rolling 24h notional,
 rolling 24h order count) → AUTO if all pass, else APPROVAL_REQUIRED.
 Splitting cannot bypass: aggregate covers intra-proposal splits, rolling
-windows cover cross-proposal splits. `apply_human_approval` only ever
+windows cover cross-proposal splits. Rolling-window membership is
+`timestamp > now - window` with no upper bound at `now`: a future-dated
+autonomous execution is inconsistent history and is counted inside the
+window so it can only tighten authority, never expand it. An event exactly
+`window` old remains excluded. `apply_human_approval` only ever
 promotes APPROVAL_REQUIRED; REJECT can never be overridden (policy must
 re-run before submission, SPEC §10). CHECK-13 (runaway hourly order count)
 is a hard REJECT in the policy engine.
@@ -202,7 +218,9 @@ rule + NYSE holiday/early-close tables, **supported range 2025-01-01 …
 2027-12-31 only**, RT-03 — outside the range every lookup raises
 `CalendarError`; weekdays are never extrapolated as sessions) and
 `StaticTradingCalendar` (authoritative session list, e.g. Alpaca calendar
-endpoint). `next_trading_day` is bounded by the calendar's last supported
+endpoint). The input date of `next_trading_day`, `add_trading_days`, and
+`settlement_date` is range-checked immediately; walking candidates is not
+enough. `next_trading_day` is also bounded by the calendar's last supported
 date and raises `CalendarError` when no next session exists — no scan toward
 `date.max`, no escaping `OverflowError` (RT-04). Tests assert the built-in
 calendar matches Phase −1 evidence exactly for 2026-08-28 … 2026-10-12

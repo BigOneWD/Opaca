@@ -10,7 +10,12 @@ from __future__ import annotations
 from datetime import timedelta
 from decimal import Decimal
 
-from opaca.authority.engine import apply_human_approval, decide_authority
+from opaca.authority.engine import (
+    ROLLING_NOTIONAL_WINDOW,
+    apply_human_approval,
+    decide_authority,
+    executions_in_window,
+)
 from opaca.domain.models import (
     AuthorityPolicy,
     AuthorityResult,
@@ -173,6 +178,73 @@ class TestRollingWindows:
         )
         assert authority.result is AuthorityResult.APPROVAL_REQUIRED
         assert any("order count" in reason for reason in authority.reasons)
+
+    def test_exactly_24h_old_remains_excluded(self) -> None:
+        history = (
+            AutonomousExecution(
+                timestamp=DEFAULT_NOW - timedelta(hours=24), notional=Decimal("40000")
+            ),
+        )
+        counted = executions_in_window(history, DEFAULT_NOW, ROLLING_NOTIONAL_WINDOW)
+        assert counted == ()
+
+    def test_just_inside_24h_cutoff_remains_included(self) -> None:
+        history = (
+            AutonomousExecution(
+                timestamp=DEFAULT_NOW - timedelta(hours=23, minutes=59, seconds=59),
+                notional=Decimal("40000"),
+            ),
+        )
+        counted = executions_in_window(history, DEFAULT_NOW, ROLLING_NOTIONAL_WINDOW)
+        assert counted == history
+
+    def test_exactly_now_counts_in_the_window(self) -> None:
+        history = (AutonomousExecution(timestamp=DEFAULT_NOW, notional=Decimal("40000")),)
+        counted = executions_in_window(history, DEFAULT_NOW, ROLLING_NOTIONAL_WINDOW)
+        assert counted == history
+
+    def test_one_second_before_now_counts_in_the_window(self) -> None:
+        history = (
+            AutonomousExecution(
+                timestamp=DEFAULT_NOW - timedelta(seconds=1), notional=Decimal("40000")
+            ),
+        )
+        counted = executions_in_window(history, DEFAULT_NOW, ROLLING_NOTIONAL_WINDOW)
+        assert counted == history
+
+    def test_one_second_after_now_counts_in_the_window(self) -> None:
+        history = (
+            AutonomousExecution(
+                timestamp=DEFAULT_NOW + timedelta(seconds=1), notional=Decimal("40000")
+            ),
+        )
+        counted = executions_in_window(history, DEFAULT_NOW, ROLLING_NOTIONAL_WINDOW)
+        assert counted == history
+
+    def test_future_timestamp_cannot_increase_autonomous_authority(self) -> None:
+        history = (
+            AutonomousExecution(
+                timestamp=DEFAULT_NOW + timedelta(seconds=1), notional=Decimal("40000")
+            ),
+        )
+        context = make_context(
+            prices=PRICES,
+            autonomous_history=history,
+            obligations=(),
+            operating_reserve=Decimal("0"),
+        )
+        proposal = make_proposal("prop-future", buy_legs("prop-future", 2, Decimal("7500")))
+        decision = evaluate(proposal, context)
+        authority = decide_authority(
+            proposal,
+            decision,
+            context.authority_policy,
+            context.autonomous_history,
+            context.execution.now,
+            partial_fill=SAFE_PARTIAL_FILL,
+        )
+        assert authority.result is AuthorityResult.APPROVAL_REQUIRED
+        assert any("rolling 24h" in reason for reason in authority.reasons)
 
     def test_rolling_order_count_at_limit_is_auto(self) -> None:
         history = tuple(

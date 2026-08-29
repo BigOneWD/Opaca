@@ -40,8 +40,16 @@ RUNAWAY_WINDOW = timedelta(hours=1)
 def executions_in_window(
     history: Sequence[AutonomousExecution], now: datetime, window: timedelta
 ) -> tuple[AutonomousExecution, ...]:
+    """Executions that count toward rolling autonomous-authority limits.
+
+    An execution is inside the window when ``timestamp > now - window``.
+    There is no upper bound at ``now``: a future-dated timestamp is
+    inconsistent history (clock skew) and is treated as inside the window
+    so it can only tighten autonomous authority, never expand it. The 24h
+    cutoff itself is unchanged: an event exactly ``window`` old is excluded.
+    """
     cutoff = now - window
-    return tuple(e for e in history if cutoff < e.timestamp <= now)
+    return tuple(e for e in history if e.timestamp > cutoff)
 
 
 def rolling_notional(
