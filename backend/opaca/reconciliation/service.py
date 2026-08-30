@@ -34,6 +34,7 @@ from opaca.domain.money import ZERO, MoneyError
 from opaca.persistence.store import SQLiteStore
 from opaca.persistence.types import (
     AuditEventType,
+    ExecutionOrderRecord,
     OrderSnapshotRecord,
     PersistedSnapshot,
     ReconciliationStatus,
@@ -160,6 +161,20 @@ def _lookup_unknown(
     return updated, reasons, review_required
 
 
+def _explained_position_delta(
+    execution_orders: Sequence[ExecutionOrderRecord],
+) -> dict[str, Decimal]:
+    """Position deltas already recorded as local fills since the last RECONCILED stamp."""
+    explained: dict[str, Decimal] = {}
+    for order in execution_orders:
+        increment = order.filled_quantity - order.reconciled_filled_quantity
+        if increment == ZERO:
+            continue
+        signed = increment if order.side is Side.BUY else -increment
+        explained[order.symbol] = explained.get(order.symbol, ZERO) + signed
+    return explained
+
+
 def compare_state(
     *,
     broker: BrokerCashState,
@@ -170,6 +185,7 @@ def compare_state(
     unknown_orders: Sequence[UnknownOrderRecord],
     settlement_events: Sequence[SettlementEvent],
     as_of: date,
+    execution_orders: Sequence[ExecutionOrderRecord] = (),
 ) -> tuple[ReconciliationStatus, list[str]]:
     reasons: list[str] = []
     status = ReconciliationStatus.RECONCILED
@@ -222,8 +238,24 @@ def compare_state(
     if previous is not None:
         prev_qty = {position.symbol: position.quantity for position in previous.positions}
         curr_qty = {position.symbol: position.quantity for position in positions}
-        if prev_qty != curr_qty:
-            reasons.append("position quantity changed versus prior snapshot")
+        explained = _explained_position_delta(execution_orders)
+        symbols = set(prev_qty) | set(curr_qty) | set(explained)
+        unexplained_reason: str | None = None
+        for symbol in symbols:
+            delta = curr_qty.get(symbol, ZERO) - prev_qty.get(symbol, ZERO)
+            expected = explained.get(symbol, ZERO)
+            if delta == expected:
+                continue
+            if delta == ZERO and expected != ZERO:
+                unexplained_reason = (
+                    f"{symbol} locally explained fill {format(expected, 'f')} "
+                    "not reflected in broker position"
+                )
+            else:
+                unexplained_reason = "position quantity changed versus prior snapshot"
+            break
+        if unexplained_reason is not None:
+            reasons.append(unexplained_reason)
             if status is ReconciliationStatus.RECONCILED:
                 status = ReconciliationStatus.DRIFT_DETECTED
 
@@ -284,13 +316,13 @@ def compare_state(
             reasons.append(f"{position.symbol} quantity_available hold-aside cannot be determined")
             status = ReconciliationStatus.UNKNOWN_REQUIRES_REVIEW
             continue
-        explained = reserved_by_symbol.get(position.symbol, ZERO) + broker_sell_remaining.get(
+        explained_hold = reserved_by_symbol.get(position.symbol, ZERO) + broker_sell_remaining.get(
             position.symbol, ZERO
         )
-        if held_aside > explained:
+        if held_aside > explained_hold:
             reasons.append(
                 f"{position.symbol} quantity_available unexplained hold-aside "
-                f"{format(held_aside, 'f')} (explained {format(explained, 'f')})"
+                f"{format(held_aside, 'f')} (explained {format(explained_hold, 'f')})"
             )
             if status is ReconciliationStatus.RECONCILED:
                 status = ReconciliationStatus.DRIFT_DETECTED
@@ -396,6 +428,7 @@ def reconcile(
                 unknown_orders=unknown_updates,
                 settlement_events=events,
                 as_of=now.date(),
+                execution_orders=ledger.execution_orders,
             )
             reasons = lookup_reasons + reasons
             if review_required:
@@ -413,6 +446,8 @@ def reconcile(
             )
             if seed_if_needed and status is ReconciliationStatus.RECONCILED:
                 store.seed_scenario_once(broker.cash, now.date(), now=now, conn=conn)
+            if status is ReconciliationStatus.RECONCILED:
+                store.stamp_reconciled_fills(conn)
             if status is ReconciliationStatus.RECONCILED:
                 event_type = AuditEventType.RECONCILIATION_COMPLETE
             elif status is ReconciliationStatus.UNKNOWN_REQUIRES_REVIEW:

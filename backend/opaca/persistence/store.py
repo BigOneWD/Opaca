@@ -22,6 +22,7 @@ from opaca.domain.models import (
     Proposal,
     ProposedOrder,
     SettlementEvent,
+    Side,
 )
 from opaca.persistence.codec import (
     dump_date,
@@ -40,6 +41,8 @@ from opaca.persistence.schema import (
 from opaca.persistence.types import (
     AuditEvent,
     AuditEventType,
+    ExecutionOrderRecord,
+    ExecutionState,
     LocalLedger,
     OrderSnapshotRecord,
     PersistedSnapshot,
@@ -747,12 +750,19 @@ class SQLiteStore:
         )
 
     def load_autonomous_history(
-        self, conn: sqlite3.Connection | None = None
+        self,
+        conn: sqlite3.Connection | None = None,
+        *,
+        exclude_proposal_id: str | None = None,
     ) -> tuple[AutonomousExecution, ...]:
         target = conn if conn is not None else self._conn
-        rows = target.execute(
-            "SELECT timestamp, notional FROM autonomous_executions ORDER BY id"
-        ).fetchall()
+        sql = "SELECT timestamp, notional FROM autonomous_executions"
+        params: list[object] = []
+        if exclude_proposal_id is not None:
+            sql += " WHERE proposal_id != ?"
+            params.append(exclude_proposal_id)
+        sql += " ORDER BY id"
+        rows = target.execute(sql, params).fetchall()
         return tuple(
             AutonomousExecution(
                 timestamp=load_datetime(str(row["timestamp"])),
@@ -879,6 +889,301 @@ class SQLiteStore:
             for row in rows
         )
 
+    def load_proposal_legs(
+        self, proposal_id: str, conn: sqlite3.Connection | None = None
+    ) -> tuple[ProposedOrder, ...]:
+        target = conn if conn is not None else self._conn
+        rows = target.execute(
+            "SELECT proposal_id, leg_index, symbol, side, quantity, reference_price, "
+            "client_order_id FROM proposal_legs WHERE proposal_id = ? ORDER BY leg_index",
+            (proposal_id,),
+        ).fetchall()
+        return tuple(
+            ProposedOrder(
+                proposal_id=str(row["proposal_id"]),
+                leg_index=int(row["leg_index"]),
+                symbol=str(row["symbol"]),
+                side=Side(str(row["side"])),
+                quantity=load_decimal(str(row["quantity"])),
+                reference_price=load_decimal(str(row["reference_price"])),
+                client_order_id=str(row["client_order_id"]),
+            )
+            for row in rows
+        )
+
+    def load_proposal(
+        self, proposal_id: str, conn: sqlite3.Connection | None = None
+    ) -> Proposal | None:
+        record = self.get_proposal(proposal_id, conn=conn)
+        if record is None:
+            return None
+        legs = self.load_proposal_legs(proposal_id, conn=conn)
+        if not legs:
+            return None
+        return Proposal(proposal_id=proposal_id, legs=legs)
+
+    def _execution_from_row(self, row: sqlite3.Row) -> ExecutionOrderRecord:
+        return ExecutionOrderRecord(
+            client_order_id=str(row["client_order_id"]),
+            proposal_id=str(row["proposal_id"]),
+            leg_index=int(row["leg_index"]),
+            symbol=str(row["symbol"]),
+            side=Side(str(row["side"])),
+            quantity=load_decimal(str(row["quantity"])),
+            filled_quantity=load_decimal(str(row["filled_quantity"])),
+            remaining_quantity=load_decimal(str(row["remaining_quantity"])),
+            state=ExecutionState(str(row["state"])),
+            broker_order_id=(
+                None if row["broker_order_id"] is None else str(row["broker_order_id"])
+            ),
+            last_broker_status=(
+                None if row["last_broker_status"] is None else str(row["last_broker_status"])
+            ),
+            filled_avg_price=(
+                None
+                if row["filled_avg_price"] is None
+                else load_decimal(str(row["filled_avg_price"]))
+            ),
+            reference_price=load_decimal(str(row["reference_price"])),
+            reconciled_filled_quantity=load_decimal(str(row["reconciled_filled_quantity"])),
+            settled_proceeds=load_decimal(str(row["settled_proceeds"])),
+            created_at=load_datetime(str(row["created_at"])),
+            updated_at=load_datetime(str(row["updated_at"])),
+        )
+
+    def get_execution_order(
+        self, client_order_id: str, conn: sqlite3.Connection | None = None
+    ) -> ExecutionOrderRecord | None:
+        target = conn if conn is not None else self._conn
+        row = target.execute(
+            "SELECT client_order_id, proposal_id, leg_index, symbol, side, quantity, "
+            "filled_quantity, remaining_quantity, state, broker_order_id, last_broker_status, "
+            "filled_avg_price, reference_price, reconciled_filled_quantity, settled_proceeds, "
+            "created_at, updated_at FROM execution_orders WHERE client_order_id = ?",
+            (client_order_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._execution_from_row(row)
+
+    def list_execution_orders(
+        self,
+        conn: sqlite3.Connection | None = None,
+        *,
+        proposal_id: str | None = None,
+        states: tuple[ExecutionState, ...] | None = None,
+    ) -> tuple[ExecutionOrderRecord, ...]:
+        target = conn if conn is not None else self._conn
+        sql = (
+            "SELECT client_order_id, proposal_id, leg_index, symbol, side, quantity, "
+            "filled_quantity, remaining_quantity, state, broker_order_id, last_broker_status, "
+            "filled_avg_price, reference_price, reconciled_filled_quantity, settled_proceeds, "
+            "created_at, updated_at FROM execution_orders WHERE 1=1"
+        )
+        params: list[object] = []
+        if proposal_id is not None:
+            sql += " AND proposal_id = ?"
+            params.append(proposal_id)
+        if states is not None:
+            placeholders = ",".join("?" for _ in states)
+            sql += f" AND state IN ({placeholders})"
+            params.extend(state.value for state in states)
+        sql += " ORDER BY proposal_id, leg_index"
+        rows = target.execute(sql, params).fetchall()
+        return tuple(self._execution_from_row(row) for row in rows)
+
+    def insert_execution_order(
+        self, record: ExecutionOrderRecord, conn: sqlite3.Connection
+    ) -> None:
+        conn.execute(
+            "INSERT INTO execution_orders("
+            "client_order_id, proposal_id, leg_index, symbol, side, quantity, "
+            "filled_quantity, remaining_quantity, state, broker_order_id, last_broker_status, "
+            "filled_avg_price, reference_price, reconciled_filled_quantity, settled_proceeds, "
+            "created_at, updated_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                record.client_order_id,
+                record.proposal_id,
+                record.leg_index,
+                record.symbol,
+                record.side.value,
+                dump_decimal(record.quantity),
+                dump_decimal(record.filled_quantity),
+                dump_decimal(record.remaining_quantity),
+                record.state.value,
+                record.broker_order_id,
+                record.last_broker_status,
+                None if record.filled_avg_price is None else dump_decimal(record.filled_avg_price),
+                dump_decimal(record.reference_price),
+                dump_decimal(record.reconciled_filled_quantity),
+                dump_decimal(record.settled_proceeds),
+                dump_datetime(record.created_at),
+                dump_datetime(record.updated_at),
+            ),
+        )
+
+    def update_execution_order(
+        self, record: ExecutionOrderRecord, conn: sqlite3.Connection
+    ) -> None:
+        conn.execute(
+            "UPDATE execution_orders SET filled_quantity = ?, remaining_quantity = ?, state = ?, "
+            "broker_order_id = ?, last_broker_status = ?, filled_avg_price = ?, "
+            "reconciled_filled_quantity = ?, settled_proceeds = ?, updated_at = ? "
+            "WHERE client_order_id = ?",
+            (
+                dump_decimal(record.filled_quantity),
+                dump_decimal(record.remaining_quantity),
+                record.state.value,
+                record.broker_order_id,
+                record.last_broker_status,
+                None if record.filled_avg_price is None else dump_decimal(record.filled_avg_price),
+                dump_decimal(record.reconciled_filled_quantity),
+                dump_decimal(record.settled_proceeds),
+                dump_datetime(record.updated_at),
+                record.client_order_id,
+            ),
+        )
+
+    def stamp_reconciled_fills(self, conn: sqlite3.Connection) -> None:
+        conn.execute("UPDATE execution_orders SET reconciled_filled_quantity = filled_quantity")
+
+    def resize_active_reservation(
+        self,
+        *,
+        proposal_id: str,
+        kind: ReservationKind,
+        now: datetime,
+        quantity: Decimal | None = None,
+        amount: Decimal | None = None,
+        symbol: str | None = None,
+        conn: sqlite3.Connection,
+    ) -> ReservationRecord | None:
+        sql = (
+            "SELECT reservation_id, proposal_id, kind, symbol, quantity, amount, "
+            "client_order_id, leg_index, status, created_at FROM reservations "
+            "WHERE proposal_id = ? AND kind = ? AND status = ?"
+        )
+        params: list[object] = [proposal_id, kind.value, ReservationStatus.ACTIVE.value]
+        if symbol is not None:
+            sql += " AND symbol = ?"
+            params.append(symbol)
+        row = conn.execute(sql, params).fetchone()
+        if row is None:
+            return None
+        conn.execute(
+            "UPDATE reservations SET quantity = ?, amount = ? WHERE reservation_id = ?",
+            (
+                None if quantity is None else dump_decimal(quantity),
+                None if amount is None else dump_decimal(amount),
+                int(row["reservation_id"]),
+            ),
+        )
+        self.record_audit(
+            AuditEventType.RESERVATION_RESIZED,
+            now,
+            proposal_id=proposal_id,
+            reason=f"{kind.value} resized",
+            detail=json.dumps(
+                {
+                    "quantity": None if quantity is None else dump_decimal(quantity),
+                    "amount": None if amount is None else dump_decimal(amount),
+                    "symbol": symbol,
+                },
+                separators=(",", ":"),
+            ),
+            conn=conn,
+        )
+        updated = conn.execute(
+            "SELECT reservation_id, proposal_id, kind, symbol, quantity, amount, "
+            "client_order_id, leg_index, status, created_at FROM reservations "
+            "WHERE reservation_id = ?",
+            (int(row["reservation_id"]),),
+        ).fetchone()
+        if updated is None:
+            return None
+        return self._reservation_from_row(updated)
+
+    def release_active_reservations(
+        self,
+        *,
+        proposal_id: str,
+        now: datetime,
+        conn: sqlite3.Connection,
+        kinds: tuple[ReservationKind, ...] | None = None,
+        symbol: str | None = None,
+        client_order_id: str | None = None,
+    ) -> int:
+        sql = "SELECT reservation_id, kind FROM reservations WHERE proposal_id = ? AND status = ?"
+        params: list[object] = [proposal_id, ReservationStatus.ACTIVE.value]
+        if kinds is not None:
+            placeholders = ",".join("?" for _ in kinds)
+            sql += f" AND kind IN ({placeholders})"
+            params.extend(kind.value for kind in kinds)
+        if symbol is not None:
+            sql += " AND symbol = ?"
+            params.append(symbol)
+        if client_order_id is not None:
+            sql += " AND client_order_id = ?"
+            params.append(client_order_id)
+        rows = conn.execute(sql, params).fetchall()
+        released = 0
+        for row in rows:
+            conn.execute(
+                "UPDATE reservations SET status = ? WHERE reservation_id = ?",
+                (ReservationStatus.RELEASED.value, int(row["reservation_id"])),
+            )
+            self.record_audit(
+                AuditEventType.RESERVATION_RELEASED,
+                now,
+                proposal_id=proposal_id,
+                reason=f"{row['kind']} released",
+                conn=conn,
+            )
+            released += 1
+        return released
+
+    def grant_human_approval(
+        self,
+        *,
+        proposal_id: str,
+        payload_hash: str,
+        now: datetime,
+        conn: sqlite3.Connection,
+    ) -> None:
+        conn.execute(
+            "INSERT INTO approval_grants(proposal_id, payload_hash, granted_at) VALUES (?, ?, ?)",
+            (proposal_id, payload_hash, dump_datetime(now)),
+        )
+        self.record_audit(
+            AuditEventType.HUMAN_APPROVAL_GRANTED,
+            now,
+            proposal_id=proposal_id,
+            reason="human approval granted; policy MUST re-run before submission",
+            conn=conn,
+        )
+
+    def get_approval_grant(
+        self, proposal_id: str, conn: sqlite3.Connection | None = None
+    ) -> tuple[str, datetime] | None:
+        target = conn if conn is not None else self._conn
+        row = target.execute(
+            "SELECT payload_hash, granted_at FROM approval_grants WHERE proposal_id = ?",
+            (proposal_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return str(row["payload_hash"]), load_datetime(str(row["granted_at"]))
+
+    def settlement_event_exists(
+        self, event_id: str, conn: sqlite3.Connection | None = None
+    ) -> bool:
+        target = conn if conn is not None else self._conn
+        row = target.execute(
+            "SELECT 1 AS n FROM settlement_events WHERE event_id = ?", (event_id,)
+        ).fetchone()
+        return row is not None
+
     def load_ledger(self, conn: sqlite3.Connection | None = None) -> LocalLedger:
         target = conn if conn is not None else self._conn
         snapshot = self.latest_snapshot(conn=target)
@@ -889,4 +1194,5 @@ class SQLiteStore:
             reservations=self.active_reservations(conn=target),
             unknown_orders=self.load_unknown_orders(conn=target),
             settlement_as_of=as_of,
+            execution_orders=self.list_execution_orders(conn=target),
         )

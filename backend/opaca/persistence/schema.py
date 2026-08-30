@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
@@ -244,6 +244,41 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     """,
     """
     CREATE INDEX idx_audit_type ON audit_events(event_type)
+    """,
+    """
+    CREATE TABLE execution_orders (
+        client_order_id TEXT PRIMARY KEY,
+        proposal_id TEXT NOT NULL REFERENCES proposals(proposal_id),
+        leg_index INTEGER NOT NULL,
+        symbol TEXT NOT NULL,
+        side TEXT NOT NULL,
+        quantity TEXT NOT NULL,
+        filled_quantity TEXT NOT NULL,
+        remaining_quantity TEXT NOT NULL,
+        state TEXT NOT NULL,
+        broker_order_id TEXT,
+        last_broker_status TEXT,
+        filled_avg_price TEXT,
+        reference_price TEXT NOT NULL,
+        reconciled_filled_quantity TEXT NOT NULL DEFAULT '0',
+        settled_proceeds TEXT NOT NULL DEFAULT '0',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(proposal_id, leg_index)
+    )
+    """,
+    """
+    CREATE TABLE approval_grants (
+        proposal_id TEXT PRIMARY KEY REFERENCES proposals(proposal_id),
+        payload_hash TEXT NOT NULL,
+        granted_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX idx_execution_orders_state ON execution_orders(state)
+    """,
+    """
+    CREATE INDEX idx_execution_orders_proposal ON execution_orders(proposal_id)
     """,
 )
 
