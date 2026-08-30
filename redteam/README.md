@@ -165,3 +165,30 @@ The 214 treasury-core tests are unchanged and still green at `3fdabf3`, which
 confirms Phase 2 touched no Treasury Core behaviour.
 
 Full report: `claude/reconciliation-state-redteam-3fdabf3.md`.
+
+### Remediation retest @ d85a2e6
+
+Target: `origin/feat/reconciliation-state @ d85a2e62b5d4c3852dcd5322eb4d2c907fbec32e`
+(`fix: close reconciliation state red-team findings`).
+
+    git worktree add --detach /tmp/rc d85a2e62b5d4c3852dcd5322eb4d2c907fbec32e
+    OPACA_BACKEND=/tmp/rc/backend pytest -q redteam/reconciliation_3fdabf3
+    #   -> 372 passed, 9 failed
+    OPACA_BACKEND=/tmp/rc/backend pytest -q redteam/
+    #   -> 586 passed, 9 failed   (214 treasury-core still green)
+
+**372 passed / 9 findings.** Verdict: **PASS WITH FINDINGS**, merge recommended.
+
+All seven findings named for retest are CLOSED. The suite was retargeted: the
+inverted tests assert the corrected behaviour and fail 86/86 against `3fdabf3`,
+so none of them is vacuous. Brittle assertions were replaced with semantic ones
+(the policy-row and check-row counts now compare against
+`DEFAULT_POLICY_ROWS` / `CHECK_ORDER`; the dynamic-dispatch scan asserts on the
+call target and enclosing function instead of a `file:line` allowlist). No
+adversarial check was weakened.
+
+Two residuals were raised by the retest (P0-1-r replay is not re-evaluated
+against a newer snapshot; P1-1-r bound read methods still expose their owner),
+and seven P2 observations carry over unchanged.
+
+Full report: `claude/reconciliation-state-retest-d85a2e6.md`.

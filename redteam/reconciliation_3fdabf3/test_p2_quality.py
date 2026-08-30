@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import ast
-import subprocess
-from decimal import Decimal
 from pathlib import Path
 
-import pytest
 import opaca
+import pytest
 from opaca.domain.models import AuthorityResult, Side
 from opaca.orchestration.reserve import evaluate_and_reserve, proposal_hash
 from opaca.persistence.types import ReservationStatus
@@ -153,12 +151,41 @@ def test_docs_match_the_implemented_state_machine():
     assert "Broker execution is NOT implemented" in doc
 
 
-def test_audit_verbosity_is_bounded(tmp_path):
+def test_audit_records_one_event_per_semantic_outcome(tmp_path):
+    """Semantic, not a magic count: each proposal gets exactly one evaluation
+    event and exactly one terminal decision event, and no detail blob is unbounded."""
+    from opaca.persistence.types import AuditEventType
+
     store, v = reconciled_store(tmp_path, qty="100")
     p = make_proposal("a", [make_order("a", 0, "SGOV", Side.SELL, "1", SGOV)])
-    evaluate_and_reserve(store, p, now=DEFAULT_NOW, prices=DEFAULT_PRICES,
-                         expected_snapshot_version=v)
-    events = store.list_audit()
-    assert len(events) <= 12, len(events)
-    assert max(len(e.detail) for e in events) < 4000
+    evaluate_and_reserve(
+        store, p, now=DEFAULT_NOW, prices=DEFAULT_PRICES, expected_snapshot_version=v
+    )
+    events = store.list_audit(proposal_id="a")
+    kinds = [e.event_type for e in events]
+    assert kinds.count(AuditEventType.PROPOSAL_EVALUATED) == 1
+    terminal = {
+        AuditEventType.RESERVATION_CREATED,
+        AuditEventType.APPROVAL_REQUIRED,
+        AuditEventType.POLICY_REJECTED,
+    }
+    assert sum(1 for k in kinds if k in terminal) == 1
+    assert all(len(e.detail) < 4000 for e in events)
+    assert all(e.snapshot_version == v for e in events)
+    store.close()
+
+
+def test_audit_is_not_duplicated_by_an_idempotent_replay(tmp_path):
+    from opaca.persistence.types import AuditEventType
+
+    store, v = reconciled_store(tmp_path, qty="100")
+    p = make_proposal("a", [make_order("a", 0, "SGOV", Side.SELL, "1", SGOV)])
+    for _ in range(3):
+        evaluate_and_reserve(
+            store, p, now=DEFAULT_NOW, prices=DEFAULT_PRICES, expected_snapshot_version=v
+        )
+    kinds = [e.event_type for e in store.list_audit(proposal_id="a")]
+    assert kinds.count(AuditEventType.PROPOSAL_EVALUATED) == 1
+    assert kinds.count(AuditEventType.RESERVATION_CREATED) == 1
+    assert kinds.count(AuditEventType.IDEMPOTENT_REPLAY) == 2
     store.close()

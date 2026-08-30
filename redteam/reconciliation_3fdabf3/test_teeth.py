@@ -8,12 +8,17 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-import pytest
 import opaca.orchestration.context as context_mod
 import opaca.policy.engine as engine_mod
 from opaca.persistence.store import SQLiteStore
 
-from probe_support import buy_worker, reconciled_store, reserved_cash, reserved_totals, run_parallel
+from probe_support import (
+    buy_worker,
+    reconciled_store,
+    reserved_cash,
+    reserved_totals,
+    run_parallel,
+)
 
 
 def test_teeth_sell_probe_detects_an_oversell(tmp_path, monkeypatch):

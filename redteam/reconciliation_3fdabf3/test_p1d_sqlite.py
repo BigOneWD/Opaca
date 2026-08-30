@@ -4,25 +4,25 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from datetime import UTC, timedelta
+from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 from opaca.domain.models import SettlementEvent, Side
 from opaca.orchestration.reserve import evaluate_and_reserve
-from opaca.persistence.codec import dump_datetime, dump_decimal, load_datetime, load_decimal
+from opaca.persistence.codec import (
+    dump_datetime,
+    dump_decimal,
+    load_decimal,
+)
 from opaca.persistence.store import PersistenceError, SQLiteStore
-from opaca.persistence.types import ReconciliationStatus
-from opaca.reconciliation.service import reconcile
 
 from probe_support import (
     DEFAULT_NOW,
     DEFAULT_PRICES,
     make_order,
     make_proposal,
-    paper_gateway,
-    position_payload,
     reconciled_store,
     temp_store,
 )
@@ -101,9 +101,15 @@ def test_d5_commit_persists_every_related_row(tmp_path):
         assert again.get_proposal("ok") is not None
         assert again.count_reservations("ok") == 2
         assert len(again.load_autonomous_history()) == 1
-        assert again._conn.execute(
-            "SELECT COUNT(*) AS n FROM policy_checks WHERE proposal_id='ok'"
-        ).fetchone()["n"] == 17
+        from opaca.policy.engine import CHECK_ORDER
+
+        persisted_checks = {
+            row["check_id"]
+            for row in again._conn.execute(
+                "SELECT check_id FROM policy_checks WHERE proposal_id='ok'"
+            )
+        }
+        assert persisted_checks == {check.value for check in CHECK_ORDER}
         assert again._conn.execute(
             "SELECT COUNT(*) AS n FROM order_identity WHERE proposal_id='ok'"
         ).fetchone()["n"] == 1
@@ -164,7 +170,12 @@ def test_d9_bootstrap_is_idempotent(tmp_path):
     check = SQLiteStore(path)
     assert check._conn.execute(
         "SELECT COUNT(*) AS n FROM schema_migrations").fetchone()["n"] == 1
-    assert check._conn.execute("SELECT COUNT(*) AS n FROM policies").fetchone()["n"] == 11
+    from opaca.persistence.schema import DEFAULT_POLICY_ROWS
+
+    persisted_policies = {
+        row["name"] for row in check._conn.execute("SELECT name FROM policies")
+    }
+    assert persisted_policies == {name for name, _value, _type in DEFAULT_POLICY_ROWS}
     check.close()
 
 
@@ -244,7 +255,11 @@ def test_FINDING_store_mutations_outside_transactions_autocommit(tmp_path):
     """set_kill_switch / insert_settlement_event / record_audit run on an
     isolation_level=None connection with no BEGIN, so each statement commits
     on its own. Demonstrated: a settlement event is visible to another
-    connection immediately, with no enclosing transaction."""
+    connection immediately, with no enclosing transaction.
+
+    Scope note: seed_scenario_once() was in this group at 3fdabf3 and is NOT
+    any more — it opens its own BEGIN IMMEDIATE when called without a
+    connection (see test_p1c_seed.py). These three remain."""
     store = temp_store(tmp_path)
     other = SQLiteStore(store.path)
     store.insert_settlement_event(
@@ -260,6 +275,15 @@ def test_FINDING_store_mutations_outside_transactions_autocommit(tmp_path):
     other.close()
     assert visible == ["auto"]
     assert kill_visible is True
+    from opaca.persistence.store import SQLiteStore as _Store
+
+    seeder = _Store(tmp_path / "seeded.sqlite")
+    try:
+        assert seeder.seed_scenario_once(
+            Decimal("100000"), DEFAULT_NOW.date(), now=DEFAULT_NOW
+        ) is not None
+    finally:
+        seeder.close()
     pytest.fail(
         "FINDING P1-D-1: public store mutators (insert_settlement_event, "
         "set_kill_switch, record_audit) execute on the autocommit connection with no "

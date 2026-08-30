@@ -8,7 +8,6 @@ from decimal import Decimal
 import pytest
 from opaca.domain.models import AuthorityResult, SettlementEvent, Side
 from opaca.orchestration.reserve import evaluate_and_reserve
-from opaca.persistence.store import SQLiteStore
 from opaca.persistence.types import ReconciliationStatus
 from opaca.reconciliation.service import reconcile
 
@@ -20,7 +19,6 @@ from probe_support import (
     paper_gateway,
     position_payload,
     reconciled_store,
-    temp_store,
 )
 
 SGOV = DEFAULT_PRICES["SGOV"]
@@ -153,35 +151,50 @@ def test_c07_non_reconciled_latest_snapshot_blocks_even_with_matching_version(tm
 # ---------------------------------------------------------------- FINDINGS
 
 
-def test_c08_FINDING_no_snapshot_age_bound(tmp_path):
-    """A RECONCILED snapshot never expires: 30 days later it is still executable."""
+def test_c08_snapshot_age_is_bounded(tmp_path):
+    """CLOSED at d85a2e6 (was P0-C-1). A snapshot older than the policy maximum
+    can no longer reserve, and the boundary is exact on both sides."""
     store, v1 = reconciled_store(tmp_path, qty="100")
+    max_age = timedelta(seconds=int(store.policy_value("max_snapshot_age_seconds")))
+
     much_later = DEFAULT_NOW + timedelta(days=30)
-    proposal = make_proposal("ancient", [make_order("ancient", 0, "SGOV", Side.SELL, "10", SGOV)])
+    ancient = make_proposal("ancient", [make_order("ancient", 0, "SGOV", Side.SELL, "10", SGOV)])
     out = evaluate_and_reserve(
-        store, proposal, now=much_later, prices=DEFAULT_PRICES,
+        store, ancient, now=much_later, prices=DEFAULT_PRICES, expected_snapshot_version=v1
+    )
+    assert out.is_auto is False
+    assert out.blocked is True
+    assert out.block_reason == "stale snapshot"
+    assert store.get_proposal("ancient") is None
+    assert store.count_reservations("ancient") == 0
+
+    edge = make_proposal("edge", [make_order("edge", 0, "SGOV", Side.SELL, "1", SGOV)])
+    assert evaluate_and_reserve(
+        store, edge, now=DEFAULT_NOW + max_age, prices=DEFAULT_PRICES,
         expected_snapshot_version=v1,
-    )
-    snap = store.latest_snapshot()
-    age = much_later - snap.captured_at
-    assert age > timedelta(days=29)
-    assert out.is_auto, "probe assumption"
-    pytest.fail(
-        f"FINDING P0-C-1: reserved AUTO against a snapshot {age} old; "
-        "no maximum snapshot age is enforced anywhere"
-    )
+    ).is_auto is True
+
+    beyond = make_proposal("beyond", [make_order("beyond", 0, "SGOV", Side.SELL, "1", SGOV)])
+    assert evaluate_and_reserve(
+        store, beyond, now=DEFAULT_NOW + max_age + timedelta(microseconds=1),
+        prices=DEFAULT_PRICES, expected_snapshot_version=v1,
+    ).blocked is True
+    assert store.get_proposal("beyond") is None
+    store.close()
 
 
-def test_c09_FINDING_expected_snapshot_version_is_optional(tmp_path):
-    """Omitting expected_snapshot_version disables the staleness gate entirely."""
+def test_c09_expected_snapshot_version_is_mandatory(tmp_path):
+    """CLOSED at d85a2e6 (was P0-C-2). Omitting expected_snapshot_version is now
+    refused outright rather than silently reserving against the latest snapshot."""
     store, v1 = reconciled_store(tmp_path, qty="100")
     reconcile(store, paper_gateway(positions=(position_payload(qty="100"),)), now=DEFAULT_NOW)
     v2 = store.latest_snapshot().version
     assert v2 != v1
     proposal = make_proposal("nover", [make_order("nover", 0, "SGOV", Side.SELL, "10", SGOV)])
     out = evaluate_and_reserve(store, proposal, now=DEFAULT_NOW, prices=DEFAULT_PRICES)
-    assert out.is_auto, "probe assumption"
-    pytest.fail(
-        "FINDING P0-C-2: evaluate_and_reserve() defaults expected_snapshot_version=None, "
-        "so a caller that evaluated against snapshot N silently reserves against N+k"
-    )
+    assert out.is_auto is False
+    assert out.blocked is True
+    assert out.block_reason == "expected_snapshot_version is required"
+    assert store.get_proposal("nover") is None
+    assert store.count_reservations("nover") == 0
+    store.close()

@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-import sqlite3
+from decimal import Decimal
 
 import pytest
-from opaca.broker.errors import InvalidBrokerStateError
 from opaca.broker.gateway import FakeAlpacaGateway
 from opaca.domain.models import OrderState, Side
-from opaca.persistence.types import ReconciliationStatus, UnknownOrderRecord
+from opaca.persistence.types import (
+    AuditEventType,
+    ReconciliationStatus,
+    UnknownOrderRecord,
+)
 from opaca.reconciliation.service import reconcile
+from tests.state_helpers import PHASE1_ASSETS, account_payload, order_payload
 
 from probe_support import (
     DEFAULT_NOW,
@@ -21,7 +25,6 @@ from probe_support import (
     reconciled_store,
     temp_store,
 )
-from tests.state_helpers import PHASE1_ASSETS, account_payload, order_payload
 
 SGOV = DEFAULT_PRICES["SGOV"]
 
@@ -193,10 +196,9 @@ def test_quantity_available_inconsistent_with_reservations_is_drift(tmp_path):
     store.close()
 
 
-def test_FINDING_unexplained_broker_hold_aside_without_local_reservation(tmp_path):
-    """quantity_available << quantity with NO local reservation is silently RECONCILED:
-    the consistency loop is keyed on local reservations, so unexplained broker-side
-    encumbrance produces no drift signal."""
+def test_unexplained_broker_hold_aside_is_drift(tmp_path):
+    """CLOSED at d85a2e6 (was P1-B-4). The hold-aside consistency check no longer
+    keys on local reservations: an unexplained reduction is drift on its own."""
     store = temp_store(tmp_path)
     reconcile(store, gw(positions=(position_payload(qty="100"),)), now=DEFAULT_NOW)
     r = reconcile(
@@ -204,108 +206,98 @@ def test_FINDING_unexplained_broker_hold_aside_without_local_reservation(tmp_pat
         gw(positions=(position_payload(qty="100", qty_available="10"),)),
         now=DEFAULT_NOW,
     )
-    assert r.status is ReconciliationStatus.RECONCILED, "probe assumption"
-    pytest.fail(
-        "FINDING P1-B-4: broker reports 90 of 100 shares held aside with no local "
-        "reservation and no broker order; reconciliation returns RECONCILED "
-        "(detection gap; CHECK-16 still bounds sells by quantity_available)"
-    )
-
-
-def test_partial_fill_at_broker_never_reconciles_into_executable_state(tmp_path):
-    store, v = reconciled_store(tmp_path, qty="100")
-    r = reconcile(
-        store,
-        gw(positions=(position_payload(qty="100"),),
-           open_orders=(order_payload("pf", status="partially_filled", qty="50",
-                                      filled_qty="20"),)),
-        now=DEFAULT_NOW,
-    )
-    assert r.status is not ReconciliationStatus.RECONCILED
+    assert r.status is ReconciliationStatus.DRIFT_DETECTED
+    assert any("unexplained hold-aside" in reason for reason in r.reasons), r.reasons
     store.close()
 
 
-def test_canceled_with_remainder_is_not_unresolved(tmp_path):
+def test_duplicate_broker_position_rows_are_invalid_broker_state(tmp_path):
+    """CLOSED at d85a2e6 (was P1-B-1). Duplicates were a raw sqlite3.IntegrityError."""
     store = temp_store(tmp_path)
     r = reconcile(
         store,
-        gw(positions=(position_payload(qty="100"),),
-           open_orders=(order_payload("c", status="canceled", qty="50", filled_qty="20"),)),
+        gw(positions=(position_payload(qty="100"), position_payload(qty="100"))),
         now=DEFAULT_NOW,
     )
-    assert r.status is ReconciliationStatus.RECONCILED
-    store.close()
-
-
-# ---------------------------------------------------------------- FINDINGS
-
-
-def test_FINDING_duplicate_broker_records_crash_reconcile(tmp_path):
-    """Duplicate rows raise a raw sqlite3.IntegrityError instead of INVALID_BROKER_STATE."""
-    store = temp_store(tmp_path)
-    with pytest.raises(sqlite3.IntegrityError):
-        reconcile(
-            store,
-            gw(positions=(position_payload(qty="100"), position_payload(qty="100"))),
-            now=DEFAULT_NOW,
-        )
+    assert r.status is ReconciliationStatus.INVALID_BROKER_STATE
+    assert r.snapshot is None
     assert store.latest_snapshot() is None
+    assert AuditEventType.INVALID_BROKER_STATE in [e.event_type for e in store.list_audit()]
     store.close()
-    pytest.fail(
-        "FINDING P1-B-1: duplicate broker position rows escape reconcile() as a raw "
-        "sqlite3.IntegrityError; there is no INVALID_BROKER_STATE classification for "
-        "duplicate broker records"
-    )
 
 
-def test_FINDING_duplicate_client_order_id_crashes_reconcile(tmp_path):
+def test_duplicate_client_order_id_is_invalid_broker_state(tmp_path):
+    """CLOSED at d85a2e6 (was P1-B-2)."""
     store = temp_store(tmp_path)
-    with pytest.raises(sqlite3.IntegrityError):
-        reconcile(
-            store,
-            gw(positions=(position_payload(qty="100"),),
-               open_orders=(order_payload("dup", status="new"),
-                            order_payload("dup", status="new"))),
-            now=DEFAULT_NOW,
-        )
-    store.close()
-    pytest.fail(
-        "FINDING P1-B-2: duplicate broker client_order_id escapes reconcile() as a raw "
-        "sqlite3.IntegrityError rather than a reconciliation status"
+    r = reconcile(
+        store,
+        gw(positions=(position_payload(qty="100"),),
+           open_orders=(order_payload("dup", status="new"), order_payload("dup", status="new"))),
+        now=DEFAULT_NOW,
     )
+    assert r.status is ReconciliationStatus.INVALID_BROKER_STATE
+    assert r.snapshot is None
+    store.close()
 
 
-def test_FINDING_filled_gt_quantity_reconciles_then_explodes_later(tmp_path):
-    """A broker order with filled_qty > qty is accepted by reconciliation and only
-    raises when the policy context is built."""
-    from opaca.orchestration.reserve import evaluate_and_reserve
-
+def test_filled_greater_than_quantity_is_invalid_at_the_boundary(tmp_path):
+    """CLOSED at d85a2e6 (was P1-B-3). The contradiction was persisted as
+    RECONCILED and only surfaced later as a raw ValueError from the orchestrator."""
     store, _ = reconciled_store(tmp_path, qty="100")
+    before = store.latest_snapshot()
     with store.begin_immediate() as conn:
         store.upsert_unknown_order(
             UnknownOrderRecord(
                 client_order_id="bad", proposal_id="p", symbol="SGOV", side="SELL",
-                quantity=__import__("decimal").Decimal("10"),
-                filled_quantity=__import__("decimal").Decimal("50"),
+                quantity=Decimal("10"), filled_quantity=Decimal("50"),
                 state=OrderState.PARTIALLY_FILLED.value,
                 last_lookup_at=None, created_at=DEFAULT_NOW,
             ),
             conn=conn,
         )
     r = reconcile(store, gw(positions=(position_payload(qty="100"),)), now=DEFAULT_NOW)
-    persisted_status = r.status
-    assert persisted_status is ReconciliationStatus.RECONCILED, persisted_status
-    p = make_proposal("later", [make_order("later", 0, "SGOV", Side.SELL, "1", SGOV)])
-    raised = None
-    try:
-        evaluate_and_reserve(store, p, now=DEFAULT_NOW, prices=DEFAULT_PRICES,
-                             expected_snapshot_version=r.snapshot.version)
-    except Exception as exc:  # noqa: BLE001
-        raised = exc
-    store.close()
-    assert raised is not None, "probe assumption: context build must fail"
-    pytest.fail(
-        f"FINDING P1-B-3: filled_quantity > quantity persisted with status "
-        f"{persisted_status.value}; the contradiction surfaces later as "
-        f"{type(raised).__name__} out of evaluate_and_reserve, not as INVALID_BROKER_STATE"
+    assert r.status is ReconciliationStatus.INVALID_BROKER_STATE
+    assert r.snapshot is None
+    assert store.latest_snapshot() == before, "the last good snapshot must be untouched"
+
+    (tmp_path / "b").mkdir()
+    fresh = temp_store(tmp_path / "b")
+    r2 = reconcile(
+        fresh,
+        gw(positions=(position_payload(qty="100"),),
+           open_orders=(order_payload("pf", status="partially_filled", qty="10",
+                                      filled_qty="50"),)),
+        now=DEFAULT_NOW,
     )
+    assert r2.status is ReconciliationStatus.INVALID_BROKER_STATE
+    fresh.close()
+    store.close()
+
+
+def test_no_raw_exception_escapes_reconcile_for_any_corrupt_shape(tmp_path):
+    """The reconciliation boundary must translate, never propagate."""
+    shapes = [
+        dict(positions=(position_payload(qty="100"), position_payload(qty="100"))),
+        dict(positions=(position_payload(qty="100", qty_available="150"),)),
+        dict(positions=({**position_payload(), "qty": "NaN"},)),
+        dict(open_orders=(order_payload("dup", status="new"), order_payload("dup", status="new"))),
+        dict(open_orders=(order_payload("f", status="filled", qty="1", filled_qty="2"),)),
+        dict(open_orders=(order_payload("s", status="new", side="sideways"),)),
+        dict(account={**account_payload(), "cash": "NaN"}),
+        dict(account={**account_payload(), "cash": "not a number"}),
+    ]
+    for index, shape in enumerate(shapes):
+        directory = tmp_path / f"s{index}"
+        directory.mkdir()
+        store = temp_store(directory)
+        try:
+            result = reconcile(store, gw(**shape), now=DEFAULT_NOW)
+        except BaseException as exc:  # noqa: BLE001
+            pytest.fail(f"{shape} raised {type(exc).__name__}: {exc}")
+        assert result.status in {
+            ReconciliationStatus.INVALID_BROKER_STATE,
+            ReconciliationStatus.UNKNOWN_REQUIRES_REVIEW,
+            ReconciliationStatus.DRIFT_DETECTED,
+        }
+        assert result.status is not ReconciliationStatus.RECONCILED
+        store.close()

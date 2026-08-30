@@ -1,8 +1,12 @@
 # Phase 2 red-team probes — reconciliation state + SQLite atomic reservation
 
-Adversarial tests written to **falsify** the builder's report for
+Adversarial tests written to **falsify** the builder's report for the Phase 2
+reconciliation/persistence/orchestration layer.
 
-    origin/feat/reconciliation-state @ 3fdabf3bcbe3e0d8c8ccfb5a9feedad584c4b6e2
+| pass | commit | result |
+| --- | --- | --- |
+| initial review | `3fdabf3bcbe3e0d8c8ccfb5a9feedad584c4b6e2` | 190 passed / 21 findings — PASS WITH FINDINGS, FIX THEN RETEST |
+| remediation retest | `d85a2e62b5d4c3852dcd5322eb4d2c907fbec32e` | **372 passed / 9 findings** — PASS WITH FINDINGS |
 
 Written by the reviewer, not the builder. No production code was modified while
 producing them. Like the rest of `redteam/`, these tests live only on
@@ -11,7 +15,7 @@ nothing from this branch — they run against a checkout of the reviewed commit.
 
 ## Running
 
-    git worktree add --detach /tmp/rc 3fdabf3bcbe3e0d8c8ccfb5a9feedad584c4b6e2
+    git worktree add --detach /tmp/rc d85a2e62b5d4c3852dcd5322eb4d2c907fbec32e
     OPACA_BACKEND=/tmp/rc/backend pytest -q redteam/reconciliation_3fdabf3
 
 `redteam/conftest.py` puts `$OPACA_BACKEND` and `$OPACA_BACKEND/tests` on
@@ -20,65 +24,86 @@ nothing from this branch — they run against a checkout of the reviewed commit.
 
 ## Reading the result
 
-    190 passed, 21 failed
+    372 passed, 9 failed
 
 Every failure is a deliberate `pytest.fail("FINDING …")` marker placed **after**
 its invariant assertions have all held; the failure message *is* the finding.
-This is the same convention the treasury-core suite uses for open findings.
 
-    pytest -q redteam/reconciliation_3fdabf3 -k "not FINDING"   # -> 190 passed
+    pytest -q redteam/reconciliation_3fdabf3 -k "not FINDING"   # -> 372 passed
 
-gives the pure invariant suite. Both figures are deterministic across repeated
-runs and identical under `python -O` / `-OO`.
+Both figures are deterministic across repeated runs and identical under
+`python -O` / `-OO`.
 
 ## Teeth
 
-`test_teeth.py` proves the P0-A and P0-B results are detections rather than
-vacuous passes. With the reservation mechanism monkeypatched out
-(`sell_reservations` and `_cash_reservation_obligations` neutralised):
+Two independent teeth checks:
 
-* two concurrent `SELL 60` proposals both reach AUTO and reserve **120 shares of
-  a 100-share position**;
-* two concurrent 15,002.81 BUY proposals deploy **30,005.62 against 22,000** of
-  deployable cash.
+* `test_teeth.py` neutralises the reservation mechanism and shows the P0-A / P0-B
+  concurrency assertions then fail — 60 + 60 concurrent sells reserve 120 shares
+  of a 100-share position, and two buys deploy 30,005.62 against 22,000.
+* Run the **current** suite against the previous commit `3fdabf3`:
 
-Both teeth checks pass, so the green concurrency results have teeth.
+        OPACA_BACKEND=<worktree-at-3fdabf3>/backend pytest -q redteam/reconciliation_3fdabf3
+        #   -> 86 failed
+
+  Every inverted test fails at `3fdabf3` and passes at `d85a2e6`, so none of the
+  inversions is vacuous.
 
 ## Files
 
 | file | attack class |
 | --- | --- |
+| `test_retest_d85a2e6.py` | the narrow remediation retest: P0-1, P0-2, P1-1 … P1-5 and the named spot-check invariants |
 | `test_p0a_sell_race.py` | P0-A atomic SELL reservation race — threads and two real OS processes |
 | `test_p0b_cash_race.py` | P0-B cash / deployment / rolling-authority concurrency |
 | `test_p0c_stale.py` | P0-C snapshot versioning, staleness, snapshot age |
 | `test_p0d_idempotency.py` | P0-D retry, replay, `client_order_id` collision, capacity neutrality |
-| `test_p0d2_replay_gates.py` | P0-D what the idempotent-replay branch skips |
-| `test_p1a_adapter.py` | P1-A malformed broker payloads (account / positions / assets / orders / prices / timestamps) |
+| `test_p0d2_replay_gates.py` | P0-D the gates the idempotent-replay branch must apply |
+| `test_p1a_adapter.py` | P1-A malformed broker payloads |
 | `test_p1b_recon_states.py` | P1-B reconciliation state distinctions, fail-closed classification |
-| `test_p1c_seed.py` | P1-C scenario seed-once |
+| `test_p1c_seed.py` | P1-C scenario seed-once and seed transactionality |
 | `test_p1d_sqlite.py` | P1-D WAL, foreign keys, atomicity, Decimal / timestamp round-trip, schema version |
-| `test_p1ef_audit_approval.py` | P1-E audit trail; P1-F `APPROVAL_REQUIRED` |
-| `test_p1g_readonly.py` | P1-G read-only Alpaca guarantee (AST scan + runtime) |
+| `test_p1ef_audit_approval.py` | P1-E audit trail; P1-F `APPROVAL_REQUIRED` and expiry |
+| `test_p1g_readonly.py` | P1-G read-only Alpaca capability (AST + runtime) |
 | `test_p1h_failure_injection.py` | P1-H failure at every transaction boundary |
 | `test_p2_quality.py` | P2 architecture / test-quality observations |
 | `test_teeth.py` | proves the P0 probes detect a real oversell |
 | `probe_support.py` | shared concurrency harness and reservation accounting |
 
-## Findings
+## Findings closed at d85a2e6
 
-21, none fail-open in a way that can currently place a trade (no broker
-execution path exists at this commit).
+All seven findings named for retest are CLOSED, each verified by tests that fail
+at `3fdabf3`:
 
-| id | probe | summary |
-| --- | --- | --- |
-| P0-1 | `test_p0d2_replay_gates.py` (4) | the idempotent-replay branch returns `is_auto=True` with the reconciliation-status, stale-snapshot and kill-switch gates all skipped |
-| P0-2 | `test_p0c_stale.py` (2) | no maximum snapshot age; `expected_snapshot_version` is optional |
-| P1-1 | `test_p1g_readonly.py` (2) | the read-only gateway retains a mutable `TradingClient` on `_client`; the blacklist misses `cancel_order_by_id` / `replace_order_by_id` |
-| P1-2 | `test_p1b_recon_states.py` (3) | duplicate broker rows and `filled > quantity` escape as raw exceptions instead of `INVALID_BROKER_STATE` |
-| P1-3 | `test_p1ef_audit_approval.py` (1) | `APPROVAL_REQUIRED` expiry is recorded but never enforced |
-| P1-4 | `test_p1b_recon_states.py` (1) | unexplained broker hold-aside produces no drift when no local reservation exists |
-| P1-5 | `test_p1c_seed.py`, `test_p1d_sqlite.py` (2) | `seed_scenario_once()` and the public store mutators are non-transactional off the autocommit connection |
-| P2 | `test_p2_quality.py`, `test_p1h_failure_injection.py` (6) | reservations never released; one AUTO sell permanently locks out later buys of that symbol; `proposal_hash` is leg-order sensitive; mutation-scan scope; non-hermetic test gate; COMMIT failure leaves the connection in a transaction |
+| finding | tests failing at 3fdabf3 |
+| --- | --- |
+| P0-1 replay safety | 6 + 7 |
+| P0-2 snapshot freshness | 8 + 2 |
+| P1-1 read-only capability | 14 + 4 |
+| P1-2 invalid broker state | 8 + 5 |
+| P1-3 approval expiry | 8 + 2 |
+| P1-4 `quantity_available` drift | 4 + 1 |
+| P1-5 scenario seed transaction | 4 + 2 |
 
-Full report: `claude/reconciliation-state-redteam-3fdabf3.md` at the repository
-root. `REPORT.md` here points at it.
+## Findings still open (9 markers)
+
+Two residuals raised by this retest, both narrower than what they replace:
+
+* **P0-1-r** (`test_p0d2_replay_gates.py`) — the replay gates check that the
+  snapshot is current, reconciled and fresh; they do not re-run TreasuryGuard, so
+  a proposal that was AUTO at v1 still reports `is_auto=True` at a valid, fresh v2
+  under which an identical fresh proposal is a hard REJECT.
+* **P1-1-r** (`test_p1g_readonly.py`, P3) — the retained bound read methods carry
+  `__self__`, so the TradingClient is one introspection hop away from a gateway
+  that passes the guard. No call site; nothing is invoked by the probe.
+
+Seven carried over unchanged from the initial review, none fail-open:
+reservations never released; one AUTO sell locks out later buys of that symbol;
+`proposal_hash` is leg-order sensitive; store mutators outside transactions
+(`seed_scenario_once` is no longer among them); a COMMIT failure leaves the
+connection in a transaction; mutation-scan scope excludes `spike/`; the backend
+test gate is not hermetic.
+
+Full report: `claude/reconciliation-state-redteam-3fdabf3.md` (initial review) and
+`claude/reconciliation-state-retest-d85a2e6.md` (this retest) at the repository
+root.

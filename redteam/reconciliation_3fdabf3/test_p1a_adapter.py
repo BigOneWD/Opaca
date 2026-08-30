@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import math
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
@@ -11,6 +10,12 @@ from opaca.broker.gateway import FakeAlpacaGateway
 from opaca.domain.models import Side
 from opaca.orchestration.reserve import read_reconcile_evaluate_reserve
 from opaca.persistence.types import ReconciliationStatus
+from tests.state_helpers import (
+    PHASE1_ASSETS,
+    account_payload,
+    order_payload,
+    position_payload,
+)
 
 from probe_support import (
     DEFAULT_NOW,
@@ -18,12 +23,6 @@ from probe_support import (
     make_order,
     make_proposal,
     temp_store,
-)
-from tests.state_helpers import (
-    PHASE1_ASSETS,
-    account_payload,
-    order_payload,
-    position_payload,
 )
 
 SGOV = DEFAULT_PRICES["SGOV"]

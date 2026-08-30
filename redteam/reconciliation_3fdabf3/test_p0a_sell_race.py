@@ -14,12 +14,11 @@ from pathlib import Path
 import pytest
 from opaca.domain.models import AuthorityResult, Side
 from opaca.orchestration.reserve import evaluate_and_reserve
-from opaca.persistence.store import SQLiteStore, SqliteBusyError
+from opaca.persistence.store import SqliteBusyError, SQLiteStore
 
 from probe_support import (
     DEFAULT_NOW,
     DEFAULT_PRICES,
-    buy_worker,
     make_order,
     make_proposal,
     reconciled_store,

@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import json
 import re
-from decimal import Decimal
 
 import pytest
 from opaca.domain.models import AuthorityResult, Side
-from opaca.orchestration.reserve import evaluate_and_reserve, read_reconcile_evaluate_reserve
+from opaca.orchestration.reserve import (
+    evaluate_and_reserve,
+)
 from opaca.persistence.codec import dump_datetime
-from opaca.persistence.types import AuditEventType, ProposalRecordStatus, ReconciliationStatus
+from opaca.persistence.types import (
+    AuditEventType,
+    ProposalRecordStatus,
+    ReconciliationStatus,
+)
 from opaca.reconciliation.service import reconcile
+from tests.state_helpers import PHASE1_ASSETS, account_payload, order_payload
 
 from probe_support import (
     DEFAULT_NOW,
@@ -23,7 +29,6 @@ from probe_support import (
     reconciled_store,
     temp_store,
 )
-from tests.state_helpers import PHASE1_ASSETS, account_payload, order_payload
 
 SGOV = DEFAULT_PRICES["SGOV"]
 SECRET_RE = re.compile(
@@ -246,10 +251,9 @@ def test_f5_kill_switch_reject_is_also_unapprovable(tmp_path):
     store.close()
 
 
-def test_FINDING_approval_records_expiry_but_nothing_enforces_it(tmp_path):
-    """The approvals row carries expires_at and snapshot_version, but a replay of the
-    same proposal_id after expiry returns the stored decision unchanged, with no
-    freshness re-check, because idempotent replay short-circuits before evaluation."""
+def test_approval_expiry_is_enforced_on_replay(tmp_path):
+    """CLOSED at d85a2e6 (was P1-F-1). expires_at is now read: an expired
+    approval is refused on replay instead of being handed back verbatim."""
     from datetime import timedelta
 
     store, v = reconciled_store(tmp_path, qty=None, cash="100000")
@@ -258,17 +262,48 @@ def test_FINDING_approval_records_expiry_but_nothing_enforces_it(tmp_path):
         ("prior", dump_datetime(DEFAULT_NOW), "49000"),
     )
     p = make_proposal("exp", [make_order("exp", 0, "SGOV", Side.BUY, "20", SGOV)])
-    first = evaluate_and_reserve(store, p, now=DEFAULT_NOW, prices=DEFAULT_PRICES,
-                                 expected_snapshot_version=v)
-    assert first.authority_result is AuthorityResult.APPROVAL_REQUIRED
-    later = DEFAULT_NOW + timedelta(days=7)
-    replay = evaluate_and_reserve(store, p, now=later, prices=DEFAULT_PRICES,
-                                  expected_snapshot_version=v)
-    store.close()
-    assert replay.idempotent_replay is True
-    assert replay.authority_result is AuthorityResult.APPROVAL_REQUIRED
-    pytest.fail(
-        "FINDING P1-F-1: replaying an APPROVAL_REQUIRED proposal 7 days after its "
-        "300s expiry returns the stored decision verbatim; expires_at is recorded but "
-        "no code path reads or enforces it"
+    first = evaluate_and_reserve(
+        store, p, now=DEFAULT_NOW, prices=DEFAULT_PRICES, expected_snapshot_version=v
     )
+    assert first.authority_result is AuthorityResult.APPROVAL_REQUIRED
+    assert first.approval_currently_valid(DEFAULT_NOW) is True
+
+    later = DEFAULT_NOW + timedelta(days=7)
+    recon = reconcile(store, paper_gateway(), now=later)
+    assert recon.status is ReconciliationStatus.RECONCILED
+    replay = evaluate_and_reserve(
+        store, p, now=later, prices=DEFAULT_PRICES,
+        expected_snapshot_version=recon.snapshot.version,
+    )
+    assert replay.blocked is True
+    assert replay.block_reason == "approval expired"
+    assert replay.approval_currently_valid(later) is False
+    assert replay.is_auto is False
+    assert store.count_reservations("exp") == 0
+    denials = [
+        e for e in store.list_audit(proposal_id="exp")
+        if e.event_type is AuditEventType.RESERVATION_DENIED
+    ]
+    assert any("approval expired" in e.reason for e in denials)
+    store.close()
+
+
+def test_approval_is_valid_up_to_but_not_including_its_expiry(tmp_path):
+    from datetime import timedelta
+
+    store, v = reconciled_store(tmp_path, qty=None, cash="100000")
+    store._conn.execute(
+        "INSERT INTO autonomous_executions(proposal_id, timestamp, notional) VALUES (?,?,?)",
+        ("prior", dump_datetime(DEFAULT_NOW), "49000"),
+    )
+    p = make_proposal("edge", [make_order("edge", 0, "SGOV", Side.BUY, "20", SGOV)])
+    out = evaluate_and_reserve(
+        store, p, now=DEFAULT_NOW, prices=DEFAULT_PRICES, expected_snapshot_version=v
+    )
+    expiry = out.expires_at
+    assert expiry == DEFAULT_NOW + timedelta(seconds=300)
+    record = store.get_proposal("edge")
+    assert record.is_currently_valid_approval(expiry - timedelta(microseconds=1)) is True
+    assert record.is_currently_valid_approval(expiry) is False
+    assert record.is_currently_valid_approval(expiry + timedelta(microseconds=1)) is False
+    store.close()

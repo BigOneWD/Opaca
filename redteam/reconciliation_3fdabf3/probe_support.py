@@ -11,7 +11,6 @@ from opaca.orchestration.reserve import evaluate_and_reserve
 from opaca.persistence.store import SQLiteStore
 from opaca.persistence.types import ReconciliationStatus
 from opaca.reconciliation.service import reconcile
-
 from tests.helpers import DEFAULT_NOW, DEFAULT_PRICES, make_order, make_proposal
 from tests.state_helpers import paper_gateway, position_payload, temp_store
 

@@ -8,7 +8,6 @@ import pytest
 from opaca.domain.models import Side
 from opaca.orchestration.reserve import evaluate_and_reserve
 from opaca.persistence.store import SQLiteStore
-from opaca.persistence.types import AuditEventType
 
 from probe_support import (
     DEFAULT_NOW,

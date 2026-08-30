@@ -154,10 +154,10 @@ def test_c7_non_reconciled_first_pass_does_not_seed(tmp_path):
     store.close()
 
 
-def test_FINDING_direct_seed_without_transaction_is_not_atomic(tmp_path):
-    """seed_scenario_once(conn=None) runs on the autocommit connection: the
-    scenario row commits before its obligations, so a mid-seed failure leaves a
-    seeded scenario with no (or partial) obligations."""
+def test_direct_seed_is_transactional(tmp_path):
+    """CLOSED at d85a2e6 (was P1-C-1). seed_scenario_once() with no explicit
+    connection now opens its own BEGIN IMMEDIATE, so a mid-seed failure rolls the
+    scenario row back together with its obligations."""
     store = temp_store(tmp_path)
     store._conn.execute(
         "INSERT INTO obligations(obligation_id, name, amount, due_date, seeded) "
@@ -165,12 +165,29 @@ def test_FINDING_direct_seed_without_transaction_is_not_atomic(tmp_path):
     )
     with pytest.raises(sqlite3.IntegrityError):
         store.seed_scenario_once(Decimal(OPENING), DEFAULT_NOW.date(), now=DEFAULT_NOW)
-    scenario_rows = store._conn.execute(
-        "SELECT COUNT(*) AS n FROM scenario_state").fetchone()["n"]
+    assert store.get_scenario() is None
+    assert store._conn.execute(
+        "SELECT COUNT(*) AS n FROM scenario_state").fetchone()["n"] == 0
+    assert store._conn.execute(
+        "SELECT COUNT(*) AS n FROM audit_events WHERE event_type='SCENARIO_SEEDED'"
+    ).fetchone()["n"] == 0
     store.close()
-    assert scenario_rows == 1, "probe assumption"
-    pytest.fail(
-        "FINDING P1-C-1: seed_scenario_once() with no explicit connection is not "
-        "transactional; scenario_state was committed while its obligations failed, "
-        "leaving an authoritative-looking seed with the wrong obligations"
+
+
+def test_direct_seed_after_a_failed_attempt_still_seeds_once(tmp_path):
+    store = temp_store(tmp_path)
+    store._conn.execute(
+        "INSERT INTO obligations(obligation_id, name, amount, due_date, seeded) "
+        "VALUES ('seed-payroll','squatter','1','2026-09-11',0)"
     )
+    with pytest.raises(sqlite3.IntegrityError):
+        store.seed_scenario_once(Decimal(OPENING), DEFAULT_NOW.date(), now=DEFAULT_NOW)
+    store._conn.execute("DELETE FROM obligations WHERE obligation_id='seed-payroll'")
+    seed = store.seed_scenario_once(Decimal("150000"), DEFAULT_NOW.date(), now=DEFAULT_NOW)
+    assert seed.opening_cash == Decimal("150000")
+    assert store._conn.execute(
+        "SELECT COUNT(*) AS n FROM scenario_state").fetchone()["n"] == 1
+    assert store._conn.execute(
+        "SELECT COUNT(*) AS n FROM audit_events WHERE event_type='SCENARIO_SEEDED'"
+    ).fetchone()["n"] == 1
+    store.close()
