@@ -104,6 +104,8 @@ requires a current snapshot:
 * Version mismatch cannot reserve.
 * Replay cannot bypass freshness, version, reconciliation status, or kill
   switch.
+* Replay never asserts currently executable AUTO, even when those gates
+  pass. Historical AUTO is not current execution eligibility.
 
 If state changed since the caller's snapshot: reject and retry from a fresh
 reconcile. Never submit (and in this phase, never report currently executable
@@ -114,14 +116,43 @@ AUTO) from a stale evaluation.
 Idempotent replay of a duplicate `proposal_id` must not create a second
 reservation, consume authority again, or duplicate order identity.
 
+A replayed proposal may report:
+
+* the proposal already exists
+* the prior authority result
+* the prior reservation identity
+* that no duplicate capacity was consumed
+
+It must **not** expose executable `is_auto=True` solely because the
+historical decision was AUTO.
+
 `OrchestrationResult.is_auto` means:
 
 > this proposal is **currently** eligible to proceed through the next
-> execution gate.
+> execution gate after a **new** current-state evaluation.
 
 It does **not** mean "this proposal was historically AUTO". Replay retains
-the stored authority result and existing reservation rows, but reports
-`is_auto=True` only when every current safety gate has passed.
+the stored authority result and existing reservation rows, returns
+`idempotent_replay=True`, and sets current executable eligibility to
+**false**. Phase 2 has no executor and does **not** re-run TreasuryGuard
+on replay.
+
+```text
+REPLAYED / HISTORICAL AUTO
+    !=
+CURRENTLY EXECUTABLE AUTO
+```
+
+Before execution (future phase; not implemented here):
+
+```text
+fresh broker reconciliation
+→ latest snapshot/version
+→ TreasuryGuard re-run
+→ authority re-run
+→ reservation validation/rebinding as required
+→ only then may execution eligibility be asserted
+```
 
 ## Reconciliation states
 
@@ -234,6 +265,8 @@ Every path below is fail-closed and cannot become currently executable AUTO:
 * local/broker drift, including unexplained `quantity_available` hold-aside
 * kill switch active (including replay of a historically AUTO proposal)
 * expired approval
+* idempotent replay of a historically AUTO proposal (historical AUTO is
+  not currently executable AUTO)
 
 ## Paper-only
 

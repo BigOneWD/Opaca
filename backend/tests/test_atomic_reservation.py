@@ -19,15 +19,62 @@ from tests.helpers import DEFAULT_NOW, DEFAULT_PRICES, make_order, make_proposal
 from tests.state_helpers import order_payload, paper_gateway, position_payload, temp_store
 
 
-def _reconcile_with_position(store: SQLiteStore, qty: str = "100") -> int:
+def _reconcile_with_position(store: SQLiteStore, qty: str = "100", cash: str = "100000") -> int:
     recon = reconcile(
         store,
-        paper_gateway(positions=(position_payload(qty=qty),)),
+        paper_gateway(cash=cash, positions=(position_payload(qty=qty),)),
         now=DEFAULT_NOW,
     )
     assert recon.status is ReconciliationStatus.RECONCILED
     assert recon.snapshot is not None
     return recon.snapshot.version
+
+
+def _scalar_count(store: SQLiteStore, sql: str) -> int:
+    row = store._conn.execute(sql).fetchone()
+    assert row is not None
+    return int(row["n"])
+
+
+def _ledger_counts(store: SQLiteStore) -> tuple[int, int, int]:
+    return (
+        _scalar_count(store, "SELECT COUNT(*) AS n FROM proposals"),
+        _scalar_count(store, "SELECT COUNT(*) AS n FROM reservations"),
+        _scalar_count(store, "SELECT COUNT(*) AS n FROM authority_decisions"),
+    )
+
+
+def _auto_buy(
+    store: SQLiteStore, version: int, pid: str = "buy-live"
+) -> tuple[Proposal, OrchestrationResult]:
+    proposal = make_proposal(
+        pid,
+        [make_order(pid, 0, "SGOV", Side.BUY, "1", DEFAULT_PRICES["SGOV"])],
+    )
+    outcome = evaluate_and_reserve(
+        store,
+        proposal,
+        now=DEFAULT_NOW,
+        prices=DEFAULT_PRICES,
+        expected_snapshot_version=version,
+    )
+    assert outcome.is_auto is True
+    assert outcome.idempotent_replay is False
+    return proposal, outcome
+
+
+def _fresh_buy(store: SQLiteStore, version: int, pid: str) -> OrchestrationResult:
+    proposal = make_proposal(
+        pid,
+        [make_order(pid, 0, "SGOV", Side.BUY, "1", DEFAULT_PRICES["SGOV"])],
+    )
+    return evaluate_and_reserve(
+        store,
+        proposal,
+        now=DEFAULT_NOW,
+        prices=DEFAULT_PRICES,
+        expected_snapshot_version=version,
+    )
 
 
 class TestIdempotency:
@@ -55,13 +102,14 @@ class TestIdempotency:
         )
         assert first.authority_result is AuthorityResult.AUTO
         assert first.reserved is True
+        assert first.is_auto is True
         assert second.idempotent_replay is True
         assert second.authority_result is AuthorityResult.AUTO
         assert second.reserved is True
         assert store.count_reservations("same-prop") == count
         assert count > 0
         assert store.get_proposal("same-prop") is not None
-        assert second.is_auto is True
+        assert second.is_auto is False
         store.close()
 
     def test_replay_changed_hash_fails_closed(self, tmp_path: Path) -> None:
@@ -230,8 +278,9 @@ class TestReplaySafety:
             expected_snapshot_version=version,
         )
         assert replay.idempotent_replay is True
-        assert replay.is_auto is True
+        assert replay.is_auto is False
         assert replay.reserved is True
+        assert replay.authority_result is AuthorityResult.AUTO
         assert (len(store.load_autonomous_history()), store.count_reservations("live")) == before
         store.close()
 
@@ -342,6 +391,170 @@ class TestReplaySafety:
         assert replay.idempotent_replay is True
         assert store.list_audit(event_type=AuditEventType.STALE_SNAPSHOT)
         store.close()
+
+
+class TestReplayCurrentEligibility:
+    """Historical AUTO is not current execution eligibility."""
+
+    def test_replay_without_state_change_is_not_currently_executable(self, tmp_path: Path) -> None:
+        store = temp_store(tmp_path)
+        version = _reconcile_with_position(store)
+        proposal, first = self._auto_sell(store, version)
+        before = _ledger_counts(store)
+        replay = evaluate_and_reserve(
+            store,
+            proposal,
+            now=DEFAULT_NOW,
+            prices=DEFAULT_PRICES,
+            expected_snapshot_version=version,
+        )
+        assert first.is_auto is True
+        assert replay.idempotent_replay is True
+        assert replay.authority_result is AuthorityResult.AUTO
+        assert replay.reserved is True
+        assert replay.is_auto is False
+        assert _ledger_counts(store) == before
+        store.close()
+
+    def test_replay_after_cash_drop_is_not_executable_auto(self, tmp_path: Path) -> None:
+        store = temp_store(tmp_path)
+        v1 = _reconcile_with_position(store, cash="100000")
+        proposal, first = _auto_buy(store, v1, "cash-drop")
+        assert first.snapshot_version == v1
+        v2 = _reconcile_with_position(store, cash="1")
+        assert v2 != v1
+        before = _ledger_counts(store)
+        replay = evaluate_and_reserve(
+            store,
+            proposal,
+            now=DEFAULT_NOW,
+            prices=DEFAULT_PRICES,
+            expected_snapshot_version=v2,
+        )
+        assert replay.idempotent_replay is True
+        assert replay.authority_result is AuthorityResult.AUTO
+        assert replay.is_auto is False
+        assert replay.snapshot_version == v1
+        assert _ledger_counts(store) == before
+        sibling = _fresh_buy(store, v2, "cash-drop-fresh")
+        assert sibling.idempotent_replay is False
+        assert sibling.authority_result is AuthorityResult.REJECT
+        assert sibling.is_auto is False
+        assert sibling.reserved is False
+        store.close()
+
+    def test_replay_after_obligation_consumes_liquidity_is_not_executable_auto(
+        self, tmp_path: Path
+    ) -> None:
+        store = temp_store(tmp_path)
+        version = _reconcile_with_position(store)
+        proposal, _first = _auto_buy(store, version, "ob-live")
+        store._conn.execute(
+            "INSERT INTO obligations(obligation_id, name, amount, due_date, seeded) "
+            "VALUES (?, ?, ?, ?, 0)",
+            ("extra-liquidity", "extra", "100000.00", "2026-09-01"),
+        )
+        before = _ledger_counts(store)
+        replay = evaluate_and_reserve(
+            store,
+            proposal,
+            now=DEFAULT_NOW,
+            prices=DEFAULT_PRICES,
+            expected_snapshot_version=version,
+        )
+        assert replay.idempotent_replay is True
+        assert replay.is_auto is False
+        assert _ledger_counts(store) == before
+        sibling = _fresh_buy(store, version, "ob-fresh")
+        assert sibling.authority_result is AuthorityResult.REJECT
+        assert sibling.is_auto is False
+        store.close()
+
+    def test_replay_after_reserve_policy_change_is_not_executable_auto(
+        self, tmp_path: Path
+    ) -> None:
+        store = temp_store(tmp_path)
+        version = _reconcile_with_position(store)
+        proposal, _first = _auto_buy(store, version, "reserve-live")
+        store._conn.execute(
+            "UPDATE scenario_state SET operating_reserve = ? WHERE id = 1",
+            ("100000.00",),
+        )
+        before = _ledger_counts(store)
+        replay = evaluate_and_reserve(
+            store,
+            proposal,
+            now=DEFAULT_NOW,
+            prices=DEFAULT_PRICES,
+            expected_snapshot_version=version,
+        )
+        assert replay.idempotent_replay is True
+        assert replay.is_auto is False
+        assert _ledger_counts(store) == before
+        sibling = _fresh_buy(store, version, "reserve-fresh")
+        assert sibling.authority_result is AuthorityResult.REJECT
+        assert sibling.is_auto is False
+        store.close()
+
+    def test_replay_after_snapshot_version_change_is_not_current_eligibility(
+        self, tmp_path: Path
+    ) -> None:
+        store = temp_store(tmp_path)
+        v1 = _reconcile_with_position(store)
+        proposal, first = self._auto_sell(store, v1, "ver-live")
+        v2 = _reconcile_with_position(store)
+        assert v2 != v1
+        replay = evaluate_and_reserve(
+            store,
+            proposal,
+            now=DEFAULT_NOW,
+            prices=DEFAULT_PRICES,
+            expected_snapshot_version=v2,
+        )
+        assert replay.idempotent_replay is True
+        assert replay.is_auto is False
+        assert replay.authority_result is AuthorityResult.AUTO
+        assert replay.snapshot_version == first.snapshot_version == v1
+        assert replay.snapshot_version != v2
+        store.close()
+
+    def test_exact_retry_creates_zero_new_capacity(self, tmp_path: Path) -> None:
+        store = temp_store(tmp_path)
+        version = _reconcile_with_position(store)
+        proposal, first = _auto_buy(store, version, "exact-retry")
+        assert first.is_auto is True
+        before = _ledger_counts(store)
+        history_before = len(store.load_autonomous_history())
+        replay = evaluate_and_reserve(
+            store,
+            proposal,
+            now=DEFAULT_NOW,
+            prices=DEFAULT_PRICES,
+            expected_snapshot_version=version,
+        )
+        assert replay.idempotent_replay is True
+        assert replay.is_auto is False
+        assert _ledger_counts(store) == before
+        assert len(store.load_autonomous_history()) == history_before
+        assert store.count_reservations("exact-retry") == before[1]
+        store.close()
+
+    def _auto_sell(
+        self, store: SQLiteStore, version: int, pid: str = "live"
+    ) -> tuple[Proposal, OrchestrationResult]:
+        proposal = make_proposal(
+            pid,
+            [make_order(pid, 0, "SGOV", Side.SELL, "10", DEFAULT_PRICES["SGOV"])],
+        )
+        outcome = evaluate_and_reserve(
+            store,
+            proposal,
+            now=DEFAULT_NOW,
+            prices=DEFAULT_PRICES,
+            expected_snapshot_version=version,
+        )
+        assert outcome.is_auto
+        return proposal, outcome
 
 
 class TestSnapshotFreshness:

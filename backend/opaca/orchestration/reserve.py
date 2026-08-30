@@ -64,9 +64,15 @@ class OrchestrationResult:
     def is_auto(self) -> bool:
         """Currently eligible to proceed through the next execution gate.
 
-        Historical AUTO is not sufficient. Replay reports is_auto only when
-        every current safety gate has passed.
+        Historical AUTO is not current execution eligibility. Idempotent replay
+        never asserts ``is_auto=True``; Phase 2 does not re-run TreasuryGuard
+        on replay. A later execution path must re-evaluate against current
+        state before eligibility may be asserted.
+
+        REPLAYED / HISTORICAL AUTO != CURRENTLY EXECUTABLE AUTO
         """
+        if self.idempotent_replay:
+            return False
         return self.authority_result is AuthorityResult.AUTO and self.reserved and not self.blocked
 
     def approval_currently_valid(self, now: datetime) -> bool:
@@ -192,9 +198,19 @@ def evaluate_and_reserve(
     and re-run TreasuryGuard before any submission.
 
     ``is_auto=True`` means the proposal is *currently* eligible to proceed
-    through the next execution gate. Idempotent replay of a historically AUTO
-    proposal does not report AUTO unless kill switch, reconciliation state,
-    snapshot freshness, and expected snapshot version all pass now.
+    through the next execution gate after a fresh evaluation of current
+    state. Idempotent replay of a historically AUTO proposal preserves
+    prior authority/reservation metadata and consumes no additional
+    capacity, but never itself asserts currently executable AUTO.
+
+    Before any future execution:
+
+        fresh broker reconciliation
+        → latest snapshot/version
+        → TreasuryGuard re-run
+        → authority re-run
+        → reservation validation/rebinding as required
+        → only then may execution eligibility be asserted.
     """
     digest = proposal_hash(proposal)
     try:
@@ -366,7 +382,12 @@ def _replay_existing(
     gate_audit: AuditEventType,
     expected_snapshot_version: int | None,
 ) -> OrchestrationResult:
-    """Idempotent replay: no second reservation, but current safety still binds."""
+    """Idempotent replay: no second reservation, no new authority consumption.
+
+    Preserves historical authority/reservation metadata. Current safety
+    gates still fail closed. Replay never asserts current execution
+    eligibility; Phase 2 does not re-run TreasuryGuard here.
+    """
     if gate_reason is not None:
         audit_reason = gate_reason
         if gate_audit is AuditEventType.STALE_SNAPSHOT and snapshot is not None:
