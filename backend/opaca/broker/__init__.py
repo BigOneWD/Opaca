@@ -11,6 +11,7 @@ from opaca.broker.gateway import (
     PAPER_ENDPOINT,
     AlpacaGateway,
     FakeAlpacaGateway,
+    ReadOnlyAlpacaGateway,
     assert_read_only_gateway,
 )
 from opaca.broker.mutation import FORBIDDEN_BROKER_MUTATIONS
@@ -25,5 +26,6 @@ __all__ = [
     "FakeAlpacaGateway",
     "InvalidBrokerStateError",
     "PaperEnvironmentError",
+    "ReadOnlyAlpacaGateway",
     "assert_read_only_gateway",
 ]

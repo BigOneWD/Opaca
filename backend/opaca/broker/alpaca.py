@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import date
-from typing import Any
+from typing import Any, Protocol, cast
 
 from opaca.broker.adapters import as_mapping
 from opaca.broker.errors import BrokerUnavailableError, PaperEnvironmentError
@@ -12,12 +12,58 @@ from opaca.broker.gateway import BrokerPayload, assert_read_only_gateway
 from opaca.broker.paper import load_paper_credentials, verify_paper_client
 
 
+class _TradingReadClient(Protocol):
+    def get_account(self) -> object: ...
+
+    def get_all_positions(self) -> Sequence[object]: ...
+
+    def get_asset(self, symbol: str) -> object: ...
+
+    def get_orders(self, filter: object = ...) -> Sequence[object]: ...
+
+    def get_order_by_client_id(self, client_order_id: str) -> object: ...
+
+    def get_calendar(self, filters: object = ...) -> Sequence[object]: ...
+
+    def get_clock(self) -> object: ...
+
+
 class AlpacaPaperGateway:
-    """Read-only wrapper around alpaca-py TradingClient (paper endpoint only)."""
+    """Read-only paper gateway. The mutable TradingClient is never retained.
+
+    Bound read callables are captured at construction; no ``_client`` /
+    ``client`` / ``_trading_client`` attribute exists on the instance.
+    """
+
+    __slots__ = (
+        "_endpoint",
+        "_get_account",
+        "_get_all_positions",
+        "_get_asset",
+        "_get_orders",
+        "_get_order_by_client_id",
+        "_get_calendar",
+        "_get_clock",
+    )
 
     def __init__(self, client: object) -> None:
-        self._endpoint = verify_paper_client(client)
-        self._client = client
+        endpoint = verify_paper_client(client)
+        reader = cast(_TradingReadClient, client)
+        get_account: Callable[[], object] = reader.get_account
+        get_all_positions: Callable[[], Sequence[object]] = reader.get_all_positions
+        get_asset: Callable[[str], object] = reader.get_asset
+        get_orders: Callable[..., Sequence[object]] = reader.get_orders
+        get_order_by_client_id: Callable[[str], object] = reader.get_order_by_client_id
+        get_calendar: Callable[..., Sequence[object]] = reader.get_calendar
+        get_clock: Callable[[], object] = reader.get_clock
+        self._endpoint = endpoint
+        self._get_account = get_account
+        self._get_all_positions = get_all_positions
+        self._get_asset = get_asset
+        self._get_orders = get_orders
+        self._get_order_by_client_id = get_order_by_client_id
+        self._get_calendar = get_calendar
+        self._get_clock = get_clock
         assert_read_only_gateway(self)
 
     @property
@@ -26,7 +72,7 @@ class AlpacaPaperGateway:
 
     def get_account(self) -> BrokerPayload:
         try:
-            return as_mapping(self._client.get_account())  # type: ignore[attr-defined]
+            return as_mapping(self._get_account())
         except PaperEnvironmentError:
             raise
         except Exception as exc:
@@ -34,14 +80,14 @@ class AlpacaPaperGateway:
 
     def get_positions(self) -> Sequence[BrokerPayload]:
         try:
-            positions = self._client.get_all_positions()  # type: ignore[attr-defined]
+            positions = self._get_all_positions()
         except Exception as exc:
             raise BrokerUnavailableError("get_positions failed") from exc
         return tuple(as_mapping(item) for item in positions)
 
     def get_asset(self, symbol: str) -> BrokerPayload:
         try:
-            return as_mapping(self._client.get_asset(symbol))  # type: ignore[attr-defined]
+            return as_mapping(self._get_asset(symbol))
         except Exception as exc:
             raise BrokerUnavailableError(f"get_asset({symbol}) failed") from exc
 
@@ -51,14 +97,14 @@ class AlpacaPaperGateway:
             from alpaca.trading.requests import GetOrdersRequest
 
             request = GetOrdersRequest(status=QueryOrderStatus.OPEN)
-            orders = self._client.get_orders(filter=request)  # type: ignore[attr-defined]
+            orders = self._get_orders(filter=request)
         except Exception as exc:
             raise BrokerUnavailableError("get_open_orders failed") from exc
         return tuple(as_mapping(item) for item in orders)
 
     def get_order_by_client_id(self, client_order_id: str) -> BrokerPayload | None:
         try:
-            order = self._client.get_order_by_client_id(client_order_id)  # type: ignore[attr-defined]
+            order = self._get_order_by_client_id(client_order_id)
         except Exception as exc:
             message = str(exc).lower()
             if "not found" in message or "404" in message or "does not exist" in message:
@@ -71,10 +117,10 @@ class AlpacaPaperGateway:
             from alpaca.trading.requests import GetCalendarRequest
 
             request = GetCalendarRequest(start=start, end=end)
-            sessions = self._client.get_calendar(filters=request)  # type: ignore[attr-defined]
+            sessions = self._get_calendar(filters=request)
         except TypeError:
             try:
-                sessions = self._client.get_calendar()  # type: ignore[attr-defined]
+                sessions = self._get_calendar()
             except Exception as exc:
                 raise BrokerUnavailableError("get_calendar failed") from exc
         except Exception as exc:
@@ -83,7 +129,7 @@ class AlpacaPaperGateway:
 
     def get_clock(self) -> BrokerPayload:
         try:
-            return as_mapping(self._client.get_clock())  # type: ignore[attr-defined]
+            return as_mapping(self._get_clock())
         except Exception as exc:
             raise BrokerUnavailableError("get_clock failed") from exc
 

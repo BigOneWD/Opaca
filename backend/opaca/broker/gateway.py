@@ -11,7 +11,11 @@ from datetime import date
 from typing import Protocol, runtime_checkable
 
 from opaca.broker.errors import BrokerUnavailableError, InvalidBrokerStateError
-from opaca.broker.mutation import ALLOWED_GATEWAY_METHODS, FORBIDDEN_BROKER_MUTATIONS
+from opaca.broker.mutation import (
+    ALLOWED_GATEWAY_METHODS,
+    FORBIDDEN_BROKER_MUTATIONS,
+    nested_mutable_client_method,
+)
 
 PAPER_ENDPOINT = "https://paper-api.alpaca.markets"
 LIVE_ENDPOINT = "https://api.alpaca.markets"
@@ -21,8 +25,12 @@ BrokerPayload = Mapping[str, object]
 
 
 @runtime_checkable
-class AlpacaGateway(Protocol):
-    """Narrow read-only broker capabilities for this phase."""
+class ReadOnlyAlpacaGateway(Protocol):
+    """Narrow read-only broker capabilities for this phase.
+
+    Application code receives this protocol only. There is no submit, cancel,
+    replace, close, exercise, raw TradingClient, or generic HTTP mutator.
+    """
 
     def get_account(self) -> BrokerPayload: ...
 
@@ -39,11 +47,17 @@ class AlpacaGateway(Protocol):
     def get_clock(self) -> BrokerPayload: ...
 
 
+AlpacaGateway = ReadOnlyAlpacaGateway
+
+
 def assert_read_only_gateway(gateway: object) -> None:
     """Fail closed if a gateway instance exposes a mutation method."""
     for name in FORBIDDEN_BROKER_MUTATIONS:
         if callable(getattr(gateway, name, None)):
             raise InvalidBrokerStateError(f"gateway exposes forbidden method {name}")
+    nested = nested_mutable_client_method(gateway)
+    if nested is not None:
+        raise InvalidBrokerStateError(f"gateway retains a mutable broker client exposing {nested}")
 
 
 @dataclass

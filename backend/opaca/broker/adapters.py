@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
 
@@ -235,6 +235,8 @@ def adapt_order_snapshot(raw: object) -> OrderSnapshotRecord:
     filled = parse_optional_decimal(data, "filled_qty")
     if filled is None:
         filled = parse_optional_decimal(data, "filled_quantity")
+    if qty is not None and filled is not None and filled > qty:
+        raise InvalidBrokerStateError(f"order {client_order_id} filled_quantity exceeds quantity")
     broker_id = data.get("id")
     return OrderSnapshotRecord(
         client_order_id=client_order_id,
@@ -246,6 +248,38 @@ def adapt_order_snapshot(raw: object) -> OrderSnapshotRecord:
         quantity=qty,
         filled_quantity=filled,
     )
+
+
+def validate_adapted_broker_rows(
+    positions: Sequence[Position],
+    orders: Sequence[OrderSnapshotRecord],
+) -> None:
+    """Fail closed on duplicate or internally contradictory broker rows."""
+    seen_symbols: set[str] = set()
+    for position in positions:
+        if position.symbol in seen_symbols:
+            raise InvalidBrokerStateError(f"duplicate broker position symbol {position.symbol}")
+        seen_symbols.add(position.symbol)
+    seen_client_ids: set[str] = set()
+    seen_broker_ids: set[str] = set()
+    for order in orders:
+        if order.client_order_id in seen_client_ids:
+            raise InvalidBrokerStateError(
+                f"duplicate broker client_order_id {order.client_order_id}"
+            )
+        seen_client_ids.add(order.client_order_id)
+        if order.broker_order_id:
+            if order.broker_order_id in seen_broker_ids:
+                raise InvalidBrokerStateError(f"duplicate broker order id {order.broker_order_id}")
+            seen_broker_ids.add(order.broker_order_id)
+        if (
+            order.quantity is not None
+            and order.filled_quantity is not None
+            and order.filled_quantity > order.quantity
+        ):
+            raise InvalidBrokerStateError(
+                f"order {order.client_order_id} filled_quantity exceeds quantity"
+            )
 
 
 def adapt_unresolved_order(record: OrderSnapshotRecord, *, proposal_id: str) -> UnresolvedOrder:

@@ -119,6 +119,21 @@ class ProposalRecord:
     expires_at: datetime | None
     source_snapshot_id: int | None
 
+    def is_currently_valid_approval(self, now: datetime) -> bool:
+        """Expired approval is not a valid approval. Exact expiry is expired.
+
+        This is not execution authority. A future submit path must still
+        re-reconcile, rebuild PolicyContext, and re-run TreasuryGuard.
+        Human approval never overrides a hard failure.
+        """
+        if self.status is not ProposalRecordStatus.APPROVAL_REQUIRED:
+            return False
+        if self.authority_result is not AuthorityResult.APPROVAL_REQUIRED:
+            return False
+        if self.expires_at is None:
+            return False
+        return now < self.expires_at
+
 
 @dataclass(frozen=True)
 class UnknownOrderRecord:

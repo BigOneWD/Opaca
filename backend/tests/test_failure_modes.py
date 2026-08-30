@@ -95,9 +95,9 @@ class TestPriceAndCalendar:
 
     def test_unsupported_calendar_date_fails_closed(self, tmp_path: Path) -> None:
         store = temp_store(tmp_path)
-        recon = reconcile(store, paper_gateway(), now=DEFAULT_NOW)
-        assert recon.snapshot is not None
         saturday = datetime(2026, 9, 5, 14, 30, tzinfo=DEFAULT_NOW.tzinfo)
+        recon = reconcile(store, paper_gateway(), now=saturday)
+        assert recon.snapshot is not None
         proposal = make_proposal(
             "weekend",
             [make_order("weekend", 0, "SGOV", Side.BUY, "1", Decimal("100.00"))],

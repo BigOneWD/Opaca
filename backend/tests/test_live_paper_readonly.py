@@ -23,6 +23,7 @@ def test_live_paper_read_only_smoke() -> None:
     assert gateway_methods_are_read_only(AlpacaPaperGateway)
     gateway = open_paper_gateway_from_env()
     assert_read_only_gateway(gateway)
+    assert getattr(gateway, "_client", None) is None
     for name in FORBIDDEN_BROKER_MUTATIONS:
         assert not callable(getattr(gateway, name, None))
     account = gateway.get_account()

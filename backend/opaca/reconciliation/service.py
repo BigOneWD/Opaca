@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from opaca.broker.adapters import (
     ACCOUNT_REDACT_KEYS,
@@ -17,10 +18,19 @@ from opaca.broker.adapters import (
     adapt_position,
     as_mapping,
     sanitize_account_diagnostics,
+    validate_adapted_broker_rows,
 )
 from opaca.broker.errors import BrokerUnavailableError, InvalidBrokerStateError
 from opaca.broker.gateway import ASSET_UNIVERSE, AlpacaGateway, assert_read_only_gateway
-from opaca.domain.models import AssetState, BrokerCashState, OrderState, Position, SettlementEvent
+from opaca.domain.models import (
+    AssetState,
+    BrokerCashState,
+    OrderState,
+    Position,
+    SettlementEvent,
+    Side,
+)
+from opaca.domain.money import ZERO, MoneyError
 from opaca.persistence.store import SQLiteStore
 from opaca.persistence.types import (
     AuditEventType,
@@ -70,6 +80,7 @@ def _read_broker(
     broker = adapt_account(account_raw, now)
     positions = tuple(adapt_position(item) for item in positions_raw)
     orders = tuple(adapt_order_snapshot(item) for item in orders_raw)
+    validate_adapted_broker_rows(positions, orders)
     return broker, positions, assets, orders, _diagnostics_json(account_raw)
 
 
@@ -217,6 +228,7 @@ def compare_state(
                 status = ReconciliationStatus.DRIFT_DETECTED
 
     reserved_by_symbol: dict[str, Decimal] = {}
+    reservation_client_ids: set[str] = set()
     for reservation in reservations:
         if (
             reservation.kind is ReservationKind.SELL_QUANTITY
@@ -227,17 +239,59 @@ def compare_state(
             reserved_by_symbol[reservation.symbol] = (
                 reserved_by_symbol.get(reservation.symbol, Decimal("0")) + reservation.quantity
             )
+            if reservation.client_order_id is not None:
+                reservation_client_ids.add(reservation.client_order_id)
     curr_pos = {position.symbol: position for position in positions}
-    for symbol, reserved in reserved_by_symbol.items():
+    for symbol, _reserved in reserved_by_symbol.items():
         position = curr_pos.get(symbol)
         if position is None:
             reasons.append(f"local SELL reservation for {symbol} but broker position missing")
             if status is ReconciliationStatus.RECONCILED:
                 status = ReconciliationStatus.DRIFT_DETECTED
+
+    broker_sell_remaining: dict[str, Decimal] = {}
+    undeterminable_sells: set[str] = set()
+    for order in orders:
+        try:
+            side = Side(order.side)
+            mapped = OrderState(order.mapped_state)
+        except ValueError as exc:
+            raise InvalidBrokerStateError("malformed broker order identity") from exc
+        if side is not Side.SELL or mapped not in UNRESOLVED_ALPACA_STATES:
             continue
-        broker_held_aside = position.quantity - position.quantity_available
-        if broker_held_aside > reserved:
-            reasons.append(f"{symbol} quantity_available inconsistent with local reservations")
+        if order.client_order_id in reservation_client_ids:
+            continue
+        if order.quantity is None:
+            undeterminable_sells.add(order.symbol)
+            continue
+        filled = order.filled_quantity if order.filled_quantity is not None else ZERO
+        if filled > order.quantity:
+            raise InvalidBrokerStateError(
+                f"order {order.client_order_id} filled_quantity exceeds quantity"
+            )
+        remaining = order.quantity - filled
+        broker_sell_remaining[order.symbol] = (
+            broker_sell_remaining.get(order.symbol, ZERO) + remaining
+        )
+
+    for position in positions:
+        if position.quantity_available > position.quantity:
+            raise InvalidBrokerStateError(f"{position.symbol} quantity_available exceeds quantity")
+        held_aside = position.quantity - position.quantity_available
+        if held_aside <= ZERO:
+            continue
+        if position.symbol in undeterminable_sells:
+            reasons.append(f"{position.symbol} quantity_available hold-aside cannot be determined")
+            status = ReconciliationStatus.UNKNOWN_REQUIRES_REVIEW
+            continue
+        explained = reserved_by_symbol.get(position.symbol, ZERO) + broker_sell_remaining.get(
+            position.symbol, ZERO
+        )
+        if held_aside > explained:
+            reasons.append(
+                f"{position.symbol} quantity_available unexplained hold-aside "
+                f"{format(held_aside, 'f')} (explained {format(explained, 'f')})"
+            )
             if status is ReconciliationStatus.RECONCILED:
                 status = ReconciliationStatus.DRIFT_DETECTED
 
@@ -245,7 +299,29 @@ def compare_state(
         status = ReconciliationStatus.UNKNOWN_REQUIRES_REVIEW
         reasons.append("local UNKNOWN_REQUIRES_REVIEW blocks trading")
 
+    for record in unknown_orders:
+        _validate_quantity_pair(record.quantity, record.filled_quantity, record.client_order_id)
+
     return status, reasons
+
+
+def _validate_quantity_pair(
+    quantity: Decimal | None, filled_quantity: Decimal | None, identity: str
+) -> None:
+    if quantity is not None and filled_quantity is not None and filled_quantity > quantity:
+        raise InvalidBrokerStateError(f"{identity} filled_quantity exceeds quantity")
+
+
+def _invalid_broker_result(exc: BaseException) -> ReconciliationResult:
+    return ReconciliationResult(
+        status=ReconciliationStatus.INVALID_BROKER_STATE,
+        reasons=(str(exc),),
+        snapshot=None,
+        broker=None,
+        positions=(),
+        assets=(),
+        orders=(),
+    )
 
 
 def reconcile(
@@ -271,15 +347,10 @@ def reconcile(
         )
     except InvalidBrokerStateError as exc:
         store.record_audit(AuditEventType.INVALID_BROKER_STATE, now, reason=str(exc))
-        return ReconciliationResult(
-            status=ReconciliationStatus.INVALID_BROKER_STATE,
-            reasons=(str(exc),),
-            snapshot=None,
-            broker=None,
-            positions=(),
-            assets=(),
-            orders=(),
-        )
+        return _invalid_broker_result(exc)
+    except (MoneyError, ValueError, TypeError, ArithmeticError, InvalidOperation) as exc:
+        store.record_audit(AuditEventType.INVALID_BROKER_STATE, now, reason=str(exc))
+        return _invalid_broker_result(exc)
 
     store.record_audit(
         AuditEventType.BROKER_STATE_READ,
@@ -293,6 +364,8 @@ def reconcile(
         unknown_updates, lookup_reasons, review_required = _lookup_unknown(
             gateway, prior_unknown, now
         )
+        for record in unknown_updates:
+            _validate_quantity_pair(record.quantity, record.filled_quantity, record.client_order_id)
     except InvalidBrokerStateError as exc:
         store.record_audit(AuditEventType.INVALID_BROKER_STATE, now, reason=str(exc))
         return ReconciliationResult(
@@ -304,53 +377,66 @@ def reconcile(
             assets=assets,
             orders=orders,
         )
+    except (MoneyError, ValueError, TypeError, ArithmeticError, InvalidOperation) as exc:
+        store.record_audit(AuditEventType.INVALID_BROKER_STATE, now, reason=str(exc))
+        return _invalid_broker_result(exc)
 
-    with store.begin_immediate() as conn:
-        for record in unknown_updates:
-            store.upsert_unknown_order(record, conn=conn)
-        ledger = store.load_ledger(conn=conn)
-        events = store.load_settlement_events(conn=conn)
-        status, reasons = compare_state(
-            broker=broker,
-            positions=positions,
-            orders=orders,
-            previous=ledger.snapshot,
-            reservations=ledger.reservations,
-            unknown_orders=unknown_updates,
-            settlement_events=events,
-            as_of=now.date(),
-        )
-        reasons = lookup_reasons + reasons
-        if review_required:
-            status = ReconciliationStatus.UNKNOWN_REQUIRES_REVIEW
-        snapshot = store.persist_snapshot(
-            broker=broker,
-            positions=positions,
-            assets=assets,
-            orders=orders,
-            status=status,
-            captured_at=now,
-            diagnostics=diagnostics,
-            reasons=reasons,
-            conn=conn,
-        )
-        if seed_if_needed and status is ReconciliationStatus.RECONCILED:
-            store.seed_scenario_once(broker.cash, now.date(), now=now, conn=conn)
-        if status is ReconciliationStatus.RECONCILED:
-            event_type = AuditEventType.RECONCILIATION_COMPLETE
-        elif status is ReconciliationStatus.UNKNOWN_REQUIRES_REVIEW:
-            event_type = AuditEventType.UNKNOWN_REQUIRES_REVIEW
-        elif status is ReconciliationStatus.INVALID_BROKER_STATE:
-            event_type = AuditEventType.INVALID_BROKER_STATE
-        else:
-            event_type = AuditEventType.DRIFT_DETECTED
-        store.record_audit(
-            event_type,
-            now,
-            reason="; ".join(reasons) if reasons else status.value,
-            snapshot_version=snapshot.version,
-            conn=conn,
-        )
+    try:
+        with store.begin_immediate() as conn:
+            for record in unknown_updates:
+                store.upsert_unknown_order(record, conn=conn)
+            ledger = store.load_ledger(conn=conn)
+            events = store.load_settlement_events(conn=conn)
+            status, reasons = compare_state(
+                broker=broker,
+                positions=positions,
+                orders=orders,
+                previous=ledger.snapshot,
+                reservations=ledger.reservations,
+                unknown_orders=unknown_updates,
+                settlement_events=events,
+                as_of=now.date(),
+            )
+            reasons = lookup_reasons + reasons
+            if review_required:
+                status = ReconciliationStatus.UNKNOWN_REQUIRES_REVIEW
+            snapshot = store.persist_snapshot(
+                broker=broker,
+                positions=positions,
+                assets=assets,
+                orders=orders,
+                status=status,
+                captured_at=now,
+                diagnostics=diagnostics,
+                reasons=reasons,
+                conn=conn,
+            )
+            if seed_if_needed and status is ReconciliationStatus.RECONCILED:
+                store.seed_scenario_once(broker.cash, now.date(), now=now, conn=conn)
+            if status is ReconciliationStatus.RECONCILED:
+                event_type = AuditEventType.RECONCILIATION_COMPLETE
+            elif status is ReconciliationStatus.UNKNOWN_REQUIRES_REVIEW:
+                event_type = AuditEventType.UNKNOWN_REQUIRES_REVIEW
+            elif status is ReconciliationStatus.INVALID_BROKER_STATE:
+                event_type = AuditEventType.INVALID_BROKER_STATE
+            else:
+                event_type = AuditEventType.DRIFT_DETECTED
+            store.record_audit(
+                event_type,
+                now,
+                reason="; ".join(reasons) if reasons else status.value,
+                snapshot_version=snapshot.version,
+                conn=conn,
+            )
+    except sqlite3.IntegrityError as exc:
+        store.record_audit(AuditEventType.INVALID_BROKER_STATE, now, reason=str(exc))
+        return _invalid_broker_result(exc)
+    except InvalidBrokerStateError as exc:
+        store.record_audit(AuditEventType.INVALID_BROKER_STATE, now, reason=str(exc))
+        return _invalid_broker_result(exc)
+    except (MoneyError, ValueError, TypeError, ArithmeticError, InvalidOperation) as exc:
+        store.record_audit(AuditEventType.INVALID_BROKER_STATE, now, reason=str(exc))
+        return _invalid_broker_result(exc)
 
     return ReconciliationResult(
         status=status,

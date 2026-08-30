@@ -8,12 +8,18 @@ from pathlib import Path
 
 from opaca.domain.models import AuthorityResult, OrderState, SettlementEvent, Side
 from opaca.domain.money import round_budget
-from opaca.persistence.types import AuditEventType, ReconciliationStatus
+from opaca.persistence.types import AuditEventType, ReconciliationStatus, UnknownOrderRecord
 from opaca.reconciliation.service import reconcile
 from opaca.treasury.liquidity import compute_liquidity
 
 from tests.helpers import DEFAULT_NOW, DEFAULT_PRICES, make_order, make_proposal
-from tests.state_helpers import b7_cash, paper_gateway, position_payload, temp_store
+from tests.state_helpers import (
+    b7_cash,
+    order_payload,
+    paper_gateway,
+    position_payload,
+    temp_store,
+)
 
 
 class TestCashReconciliation:
@@ -219,4 +225,169 @@ class TestUnknown:
         assert outcome.blocked is True
         assert outcome.reserved is False
         assert outcome.authority_result is not AuthorityResult.AUTO
+        store.close()
+
+
+class TestInvalidBrokerState:
+    def test_duplicate_position_symbol_is_invalid(self, tmp_path: Path) -> None:
+        store = temp_store(tmp_path)
+        result = reconcile(
+            store,
+            paper_gateway(positions=(position_payload(qty="100"), position_payload(qty="100"))),
+            now=DEFAULT_NOW,
+        )
+        assert result.status is ReconciliationStatus.INVALID_BROKER_STATE
+        assert result.snapshot is None
+        store.close()
+
+    def test_duplicate_client_order_id_is_invalid(self, tmp_path: Path) -> None:
+        store = temp_store(tmp_path)
+        result = reconcile(
+            store,
+            paper_gateway(
+                positions=(position_payload(qty="100"),),
+                open_orders=(
+                    order_payload("dup", status="new"),
+                    order_payload("dup", status="new"),
+                ),
+            ),
+            now=DEFAULT_NOW,
+        )
+        assert result.status is ReconciliationStatus.INVALID_BROKER_STATE
+        assert result.snapshot is None
+        store.close()
+
+    def test_filled_gt_quantity_is_invalid(self, tmp_path: Path) -> None:
+        store = temp_store(tmp_path)
+        result = reconcile(
+            store,
+            paper_gateway(
+                positions=(position_payload(qty="100"),),
+                open_orders=(
+                    order_payload("bad", status="partially_filled", qty="10", filled_qty="50"),
+                ),
+            ),
+            now=DEFAULT_NOW,
+        )
+        assert result.status is ReconciliationStatus.INVALID_BROKER_STATE
+        store.close()
+
+    def test_unknown_order_filled_gt_quantity_is_invalid(self, tmp_path: Path) -> None:
+        store = temp_store(tmp_path)
+        reconcile(store, paper_gateway(positions=(position_payload(qty="100"),)), now=DEFAULT_NOW)
+        with store.begin_immediate() as conn:
+            store.upsert_unknown_order(
+                UnknownOrderRecord(
+                    client_order_id="bad",
+                    proposal_id="p",
+                    symbol="SGOV",
+                    side="SELL",
+                    quantity=Decimal("10"),
+                    filled_quantity=Decimal("50"),
+                    state=OrderState.PARTIALLY_FILLED.value,
+                    last_lookup_at=None,
+                    created_at=DEFAULT_NOW,
+                ),
+                conn=conn,
+            )
+        result = reconcile(
+            store, paper_gateway(positions=(position_payload(qty="100"),)), now=DEFAULT_NOW
+        )
+        assert result.status is ReconciliationStatus.INVALID_BROKER_STATE
+        assert result.snapshot is None or (
+            result.snapshot.reconciliation_status is not ReconciliationStatus.RECONCILED
+        )
+        store.close()
+
+
+class TestQuantityAvailable:
+    def test_unexplained_hold_aside_is_drift(self, tmp_path: Path) -> None:
+        store = temp_store(tmp_path)
+        reconcile(store, paper_gateway(positions=(position_payload(qty="100"),)), now=DEFAULT_NOW)
+        result = reconcile(
+            store,
+            paper_gateway(positions=(position_payload(qty="100", qty_available="10"),)),
+            now=DEFAULT_NOW,
+        )
+        assert result.status is ReconciliationStatus.DRIFT_DETECTED
+        store.close()
+
+    def test_local_reservation_explains_hold_aside(self, tmp_path: Path) -> None:
+        from opaca.orchestration.reserve import evaluate_and_reserve
+
+        store = temp_store(tmp_path)
+        recon = reconcile(
+            store, paper_gateway(positions=(position_payload(qty="100"),)), now=DEFAULT_NOW
+        )
+        assert recon.snapshot is not None
+        proposal = make_proposal(
+            "res",
+            [make_order("res", 0, "SGOV", Side.SELL, "10", DEFAULT_PRICES["SGOV"])],
+        )
+        assert evaluate_and_reserve(
+            store,
+            proposal,
+            now=DEFAULT_NOW,
+            prices=DEFAULT_PRICES,
+            expected_snapshot_version=recon.snapshot.version,
+        ).is_auto
+        result = reconcile(
+            store,
+            paper_gateway(positions=(position_payload(qty="100", qty_available="90"),)),
+            now=DEFAULT_NOW,
+        )
+        assert result.status is ReconciliationStatus.RECONCILED
+        store.close()
+
+    def test_known_broker_sell_explains_hold_aside(self, tmp_path: Path) -> None:
+        store = temp_store(tmp_path)
+        with store.begin_immediate() as conn:
+            store.upsert_unknown_order(
+                UnknownOrderRecord(
+                    client_order_id="known-sell",
+                    proposal_id="p",
+                    symbol="SGOV",
+                    side="SELL",
+                    quantity=Decimal("60"),
+                    filled_quantity=Decimal("0"),
+                    state=OrderState.NEW.value,
+                    last_lookup_at=None,
+                    created_at=DEFAULT_NOW,
+                ),
+                conn=conn,
+            )
+        result = reconcile(
+            store,
+            paper_gateway(
+                positions=(position_payload(qty="100", qty_available="40"),),
+                open_orders=(order_payload("known-sell", status="new", qty="60"),),
+            ),
+            now=DEFAULT_NOW,
+        )
+        assert result.status is ReconciliationStatus.RECONCILED
+        store.close()
+
+    def test_quantity_available_gt_quantity_is_invalid(self, tmp_path: Path) -> None:
+        store = temp_store(tmp_path)
+        result = reconcile(
+            store,
+            paper_gateway(positions=(position_payload(qty="100", qty_available="150"),)),
+            now=DEFAULT_NOW,
+        )
+        assert result.status is ReconciliationStatus.INVALID_BROKER_STATE
+        store.close()
+
+    def test_fractional_unexplained_hold_aside_is_drift(self, tmp_path: Path) -> None:
+        store = temp_store(tmp_path)
+        reconcile(
+            store,
+            paper_gateway(positions=(position_payload(qty="100.5"),)),
+            now=DEFAULT_NOW,
+        )
+        result = reconcile(
+            store,
+            paper_gateway(positions=(position_payload(qty="100.5", qty_available="100.4"),)),
+            now=DEFAULT_NOW,
+        )
+        assert result.status is ReconciliationStatus.DRIFT_DETECTED
         store.close()

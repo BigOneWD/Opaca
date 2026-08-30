@@ -77,7 +77,13 @@ class TestAudit:
             "BIL": DEFAULT_PRICES["BIL"],
             "SHV": DEFAULT_PRICES["SHV"],
         }
-        denied = evaluate_and_reserve(store, reject, now=DEFAULT_NOW, prices=prices)
+        denied = evaluate_and_reserve(
+            store,
+            reject,
+            now=DEFAULT_NOW,
+            prices=prices,
+            expected_snapshot_version=recon.snapshot.version if recon.snapshot else None,
+        )
         assert denied.authority_result is AuthorityResult.REJECT
         assert store.list_audit(
             event_type=AuditEventType.POLICY_REJECTED, proposal_id="blocked-buy"
@@ -100,6 +106,18 @@ class TestMutationScan:
                 continue
             offenders.append(f"{path.relative_to(BACKEND_ROOT)}: {sorted(hits)}")
         assert offenders == []
+
+    def test_forbidden_set_covers_alpaca_py_mutators(self) -> None:
+        required = {
+            "submit_order",
+            "cancel_order_by_id",
+            "cancel_orders",
+            "replace_order_by_id",
+            "close_position",
+            "close_all_positions",
+            "exercise_options_position",
+        }
+        assert required <= FORBIDDEN_BROKER_MUTATIONS
 
     def test_live_gateway_source_has_no_mutation_calls(self) -> None:
         source = (PRODUCTION_ROOT / "broker" / "alpaca.py").read_text(encoding="utf-8")

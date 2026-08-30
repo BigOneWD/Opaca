@@ -9,6 +9,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from opaca.broker.adapters import UNRESOLVED_ALPACA_STATES, adapt_unresolved_order
+from opaca.broker.errors import InvalidBrokerStateError
 from opaca.calendar.us_trading_calendar import US_TRADING_CALENDAR, TradingCalendar
 from opaca.domain.models import (
     AssetState,
@@ -23,7 +24,7 @@ from opaca.domain.models import (
     Side,
     UnresolvedOrder,
 )
-from opaca.domain.money import ZERO
+from opaca.domain.money import ZERO, MoneyError
 from opaca.persistence.store import PersistenceError, SQLiteStore
 from opaca.persistence.types import (
     PersistedSnapshot,
@@ -113,17 +114,22 @@ def _unresolved_from_unknown(records: tuple[UnknownOrderRecord, ...]) -> list[Un
         except ValueError:
             state = OrderState.UNKNOWN_REQUIRES_REVIEW
             side = Side.SELL if record.side.upper() == "SELL" else Side.BUY
-        orders.append(
-            UnresolvedOrder(
-                proposal_id=record.proposal_id,
-                symbol=record.symbol,
-                side=side,
-                client_order_id=record.client_order_id,
-                state=state,
-                quantity=record.quantity,
-                filled_quantity=record.filled_quantity,
+        try:
+            orders.append(
+                UnresolvedOrder(
+                    proposal_id=record.proposal_id,
+                    symbol=record.symbol,
+                    side=side,
+                    client_order_id=record.client_order_id,
+                    state=state,
+                    quantity=record.quantity,
+                    filled_quantity=record.filled_quantity,
+                )
             )
-        )
+        except (MoneyError, ValueError) as exc:
+            raise InvalidBrokerStateError(
+                f"malformed unknown order {record.client_order_id}"
+            ) from exc
     return orders
 
 

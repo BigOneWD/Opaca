@@ -231,24 +231,37 @@ class SQLiteStore:
         now: datetime,
         conn: sqlite3.Connection | None = None,
     ) -> ScenarioSeed:
-        """Persist the ratio-to-absolute seed once. Later cash must not rescale."""
-        target = conn if conn is not None else self._conn
+        """Persist the ratio-to-absolute seed once. Later cash must not rescale.
+
+        Direct calls (conn is None) run under BEGIN IMMEDIATE so a mid-seed
+        failure rolls back scenario_state together with obligations.
+        """
+        if conn is None:
+            with self.begin_immediate() as txn:
+                return self.seed_scenario_once(opening_cash, seeded_at, now=now, conn=txn)
+        target = conn
         existing = self.get_scenario(conn=target)
         if existing is not None:
             return existing
         seed = seed_scenario(opening_cash, seeded_at)
-        target.execute(
-            "INSERT INTO scenario_state("
-            "id, opening_cash, seeded_at, operating_reserve, investable_surplus, created_at"
-            ") VALUES (1, ?, ?, ?, ?, ?)",
-            (
-                dump_decimal(seed.opening_cash),
-                dump_date(seed.seeded_at),
-                dump_decimal(seed.operating_reserve),
-                dump_decimal(seed.investable_surplus),
-                dump_datetime(now),
-            ),
-        )
+        try:
+            target.execute(
+                "INSERT INTO scenario_state("
+                "id, opening_cash, seeded_at, operating_reserve, investable_surplus, created_at"
+                ") VALUES (1, ?, ?, ?, ?, ?)",
+                (
+                    dump_decimal(seed.opening_cash),
+                    dump_date(seed.seeded_at),
+                    dump_decimal(seed.operating_reserve),
+                    dump_decimal(seed.investable_surplus),
+                    dump_datetime(now),
+                ),
+            )
+        except sqlite3.IntegrityError:
+            raced = self.get_scenario(conn=target)
+            if raced is not None:
+                return raced
+            raise
         for obligation in seed.obligations:
             target.execute(
                 "INSERT INTO obligations("

@@ -260,7 +260,10 @@ DEFAULT_POLICY_ROWS: tuple[tuple[str, str, str], ...] = (
     ("preclose_blackout_enabled", "1", "bool"),
     ("preclose_blackout_minutes", "15", "int"),
     ("approval_expiry_seconds", "300", "int"),
+    ("max_snapshot_age_seconds", "60", "int"),
     ("permitted_symbols", '["SGOV", "BIL", "SHV"]', "json"),
 )
+
+DEFAULT_MAX_SNAPSHOT_AGE_SECONDS = 60
 
 DEFAULT_SYSTEM_STATE: tuple[tuple[str, str], ...] = (("kill_switch", "0"),)
