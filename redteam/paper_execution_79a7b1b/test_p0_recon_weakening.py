@@ -97,10 +97,10 @@ def test_r06_a_disappearing_symbol_is_drift(tmp_path):
 # ------------------------------------------------------------------- FINDING
 
 
-def test_FINDING_a_zero_net_delta_is_never_compared_against_local_fills(tmp_path):
-    """compare_state short-circuits on `delta == 0` before comparing it to the
-    explained delta. A recorded local fill that the broker position does not
-    reflect is therefore invisible to reconciliation."""
+def test_a_zero_net_delta_is_compared_against_local_fills(tmp_path):
+    """CLOSED at cd3dc86 (was P1-1). compare_state no longer short-circuits on a raw
+    delta of zero: it compares `delta == expected` for every symbol, including symbols
+    that appear only in the explained set."""
     from opaca.domain.models import BrokerCashState, Position, Side
     from opaca.persistence.types import ExecutionOrderRecord, ExecutionState, PersistedSnapshot
 
@@ -118,7 +118,6 @@ def test_FINDING_a_zero_net_delta_is_never_compared_against_local_fills(tmp_path
         reconciliation_status=ReconciliationStatus.RECONCILED, captured_at=DEFAULT_NOW,
         diagnostics="{}",
     )
-    # local records a 10-share SELL fill that the broker position does not show
     order = ExecutionOrderRecord(
         client_order_id="opaca-" + "0" * 32, proposal_id="s1", leg_index=0, symbol="SGOV",
         side=Side.SELL, quantity=Decimal("10"), filled_quantity=Decimal("10"),
@@ -128,43 +127,32 @@ def test_FINDING_a_zero_net_delta_is_never_compared_against_local_fills(tmp_path
         settled_proceeds=Decimal("0"), created_at=DEFAULT_NOW, updated_at=DEFAULT_NOW,
     )
     status, reasons = compare_state(
-        broker=broker,
-        positions=(position,),          # unchanged: delta == 0
-        orders=(),
-        previous=previous,
-        reservations=(),
-        unknown_orders=(),
-        settlement_events=(),
-        as_of=DEFAULT_NOW.date(),
-        execution_orders=(order,),      # explained == -10
+        broker=broker, positions=(position,), orders=(), previous=previous,
+        reservations=(), unknown_orders=(), settlement_events=(),
+        as_of=DEFAULT_NOW.date(), execution_orders=(order,),
     )
-    assert status is ReconciliationStatus.RECONCILED, "probe assumption"
-    assert not any("position quantity changed" in r for r in reasons)
-    pytest.fail(
-        "FINDING P1-1: compare_state skips the explained-delta comparison whenever the "
-        "raw delta is zero. A recorded local SELL fill of 10 with an unchanged broker "
-        "position (explained -10 vs delta 0) reconciles as RECONCILED, so a fill the "
-        "broker does not reflect - a busted or reversed trade, or a phantom local fill - "
-        "raises no drift signal from the position check."
+    assert status is ReconciliationStatus.DRIFT_DETECTED
+    assert any("not reflected in broker position" in r for r in reasons), reasons
+
+    # and a genuine no-change with nothing explained is still RECONCILED
+    clean, _ = compare_state(
+        broker=broker, positions=(position,), orders=(), previous=previous,
+        reservations=(), unknown_orders=(), settlement_events=(),
+        as_of=DEFAULT_NOW.date(), execution_orders=(),
     )
+    assert clean is ReconciliationStatus.RECONCILED
 
 
-def test_FINDING_offsetting_external_change_hides_behind_our_fill(tmp_path):
-    """End-to-end shape of the same hole: our 10-share sell fills, an external
-    +10 arrives before we reconcile, and the net delta of zero is not examined."""
+def test_an_offsetting_external_change_is_drift(tmp_path):
+    """CLOSED at cd3dc86 (was P1-1, end to end). Our 10-share sell fills and an
+    external +10 restores the position: the net zero delta is now examined."""
     w = world(tmp_path)
     proposal = sell("s1", "10")
     reserve(w, proposal)
     _execute(w, proposal)
-    # broker position went 100 -> 90 from our fill; an external buy restores it to 100
     w.positions[0]["qty"] = "100"
     w.positions[0]["qty_available"] = "100"
     recon = reconcile(w.store, w.read(), now=DEFAULT_NOW)
-    status = recon.status
+    status, reasons = recon.status, recon.reasons
     w.close()
-    assert status is ReconciliationStatus.RECONCILED, "probe assumption"
-    pytest.fail(
-        "FINDING P1-1 (end to end): our recorded 10-share sell plus an unexplained "
-        "external +10 nets to a zero position delta and reconciles as RECONCILED; "
-        "the offsetting external movement is never surfaced."
-    )
+    assert status is ReconciliationStatus.DRIFT_DETECTED, reasons

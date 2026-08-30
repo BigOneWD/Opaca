@@ -398,54 +398,34 @@ def test_t25_a_corrupt_filled_avg_price_does_not_corrupt_proceeds(tmp_path):
     w.close()
 
 
-def test_FINDING_a_bare_assert_reappeared_in_the_production_package(tmp_path):
-    """Regression of a closed treasury-core control (P2-d at bc5fcda): the package
-    was verified to contain zero `assert` statements in two prior reviews, so that
-    behaviour survives `python -O`. Phase 3 adds one back."""
+def test_no_bare_assert_in_the_production_package(tmp_path):
+    """CLOSED at cd3dc86 (was P2-1). The treasury-core control is restored: zero
+    `assert` statements in backend/opaca/, so behaviour is identical under -O."""
     import ast
     import pathlib
 
     import opaca
 
     root = pathlib.Path(opaca.__file__).resolve().parent
+    modules = sorted(root.rglob("*.py"))
     found = [
         f"{p.relative_to(root)}:{node.lineno}"
-        for p in sorted(root.rglob("*.py"))
+        for p in modules
         for node in ast.walk(ast.parse(p.read_text(encoding="utf-8")))
         if isinstance(node, ast.Assert)
     ]
-    assert found, "probe assumption"
-    pytest.fail(
-        f"FINDING P2-1: bare assert(s) reintroduced into backend/opaca/: {found}. "
-        "Stripped under `python -O`, so the guarded invariant is unchecked in an "
-        "optimised run."
-    )
+    assert modules
+    assert found == [], found
 
 
-def test_the_reintroduced_assert_is_not_reachable_from_the_public_path(tmp_path):
-    """Bounding the finding above. The guarded value only stays None when the leg
-    loop never runs, i.e. a proposal with no legs - and such a proposal is refused
-    by revalidation long before the assert. Nothing is submitted either way, so the
-    regression is one of hygiene and of a previously-closed control, not an
-    exploitable defect."""
-    from opaca.domain.models import Proposal
-    from opaca.orchestration.reserve import evaluate_and_reserve
+def test_the_replacement_raises_instead_of_asserting(tmp_path):
+    """The invariant that the assert used to guard is now an explicit raise."""
+    import pathlib
 
-    w = world(tmp_path)
-    empty = Proposal(proposal_id="empty", legs=())
-    recon = reconcile(w.store, w.read(), now=DEFAULT_NOW)
-    evaluate_and_reserve(
-        w.store, empty, now=DEFAULT_NOW, prices=DEFAULT_PRICES,
-        expected_snapshot_version=recon.snapshot.version,
-    )
-    gw = w.mutate()
-    raised = None
-    result = None
-    try:
-        result = _execute(w, empty, gw)
-    except BaseException as exc:  # noqa: BLE001
-        raised = exc
-    w.close()
-    assert gw.submit_calls == 0, "an empty proposal must never reach the broker"
-    assert raised is None, f"unexpected crash: {raised!r}"
-    assert result is not None and result.blocked is True
+    import opaca.execution.service
+
+    source = pathlib.Path(
+        opaca.execution.service.__file__
+    ).read_text(encoding="utf-8")
+    assert "ExecutionInvariantError" in source
+    assert "assert last is not None" not in source

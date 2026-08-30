@@ -233,13 +233,16 @@ Target: `origin/feat/paper-execution @ 79a7b1b837c86dc700533eeda6f5699b197a7d4a`
 (`feat: implement safe Alpaca paper execution lifecycle`), on production baseline
 `main @ 12f4eb02f9c832f7368cc0c06f67afaf4bb1d7d8`.
 
-    git worktree add --detach /tmp/pe 79a7b1b837c86dc700533eeda6f5699b197a7d4a
+    git worktree add --detach /tmp/pe cd3dc86b7153718bbc98072a79a81ae3587f9477
     OPACA_BACKEND=/tmp/pe/backend pytest -q redteam/paper_execution_79a7b1b
-    #   -> 94 passed, 7 failed
+    #   -> 139 passed, 4 failed   (all four are PRE-LIVE readiness reports)
     OPACA_BACKEND=/tmp/pe/backend pytest -q redteam/
-    #   -> 719 passed, 14 failed
+    #   -> 765 passed, 10 failed
 
-**94 passed / 7 findings.** Verdict: **PASS WITH FINDINGS**, **FIX THEN RETEST**.
+**Architecture review @ 79a7b1b:** 94 passed / 7 findings — PASS WITH FINDINGS,
+FIX THEN RETEST. **Final retest @ cd3dc86: 135 passed / 0 execution-safety
+findings** — all five closed, verdict **PASS WITH FINDINGS** (the remaining four
+markers are pre-live readiness reports, not defects), **MERGE** recommended.
 
 This is the first phase that can place an order. Reviewed **offline only** — no
 credentials requested, no live call, and **no mutation of any kind performed**,
@@ -252,15 +255,23 @@ an over-release, a submission under a closed gate, or a live-endpoint call.
 Two Phase 2 findings are **closed** by this phase: reservations are now released
 against proven disposition, and the permanent opposing-buy lockout is gone.
 
-Five findings, all fail-closed:
+Five findings were raised at `79a7b1b`, all fail-closed, and **all are CLOSED at
+`cd3dc86`** — each verified by tests that fail at the previous commit (30 in total):
 
-| id | summary |
-| --- | --- |
-| P1-1 | `compare_state` skips the explained-delta comparison when the raw position delta is zero |
-| P1-2 | every live order is counted twice against its own capacity (reservation + broker order) |
-| P1-3 | a REJECTED first leg strands later legs in `SUBMITTING` for orders never sent |
-| P2-1 | a bare `assert` reappeared in `backend/opaca/`, regressing a control closed at `bc5fcda` |
-| P3-1 | the kill switch is not re-read immediately before `submit_order` |
+| id | summary | closed by |
+| --- | --- | --- |
+| P1-1 | `compare_state` skipped the explained-delta comparison at a zero raw delta | `delta == expected` for every symbol, including symbols only in the explained set |
+| P1-2 | a live order counted twice against its own capacity | broker orders with a locally known `client_order_id` are skipped, plus a merge that dedupes by identity |
+| P1-3 | a rejected leg stranded later legs in `SUBMITTING` | new terminal `NOT_SUBMITTED` state, `_abort_unsent_legs`, `ORDER_NOT_SUBMITTED` audit, reservations released |
+| P2-1 | a bare `assert` in `backend/opaca/` | replaced with `ExecutionInvariantError`; 0 `ast.Assert` across all 40 modules |
+| P3-1 | the kill switch was not re-read before `submit_order` | a last-moment read inside `_submit_leg`, marking the leg `NOT_SUBMITTED` |
+
+Two items are reported for the pre-live gate rather than fixed:
+**LIVE PRICE READINESS: PRE-LIVE BLOCKER** (the live mutation smoke prices its order
+from test constants; no market-data client exists; a wrong `reference_price` flips
+the authority decision from `APPROVAL_REQUIRED` to `AUTO`) and
+**SCHEMA V2 READINESS: FRESH-DB REQUIRED** (a v1 database fails closed on open and
+there is no migration step).
 
 Five probes in the earlier suites were **retargeted**, not relaxed, because the
 phase boundary legitimately moved: the "no mutation anywhere" scan became a scope
@@ -268,4 +279,5 @@ assertion on call sites and receivers; the dynamic-dispatch allow-list gained th
 Phase 3 guard function; two schema assertions pinned to a literal `1` now compare
 against `SCHEMA_VERSION`; and the two Phase 2 findings listed above were inverted.
 
-Full report: `claude/paper-execution-redteam-79a7b1b.md`.
+Full reports: `claude/paper-execution-redteam-79a7b1b.md` (architecture review)
+and `claude/paper-execution-retest-cd3dc86.md` (final closeout).

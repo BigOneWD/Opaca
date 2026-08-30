@@ -95,35 +95,33 @@ def test_m03_retrying_a_partially_submitted_proposal_never_resubmits(tmp_path):
     w.close()
 
 
-def test_FINDING_a_rejected_first_leg_strands_the_remaining_legs(tmp_path):
-    """Intents for every leg are committed before the first submit. If leg 0 comes
-    back REJECTED the loop breaks, leaving leg 1 permanently in SUBMITTING for an
-    order that was never sent - and recovery can only reclassify it as UNKNOWN."""
+def test_a_rejected_first_leg_marks_later_legs_not_submitted(tmp_path):
+    """CLOSED at cd3dc86 (was P1-3). Legs that were definitely never dispatched now
+    reach the explicit terminal state NOT_SUBMITTED, with the abort reason preserved
+    and the reservations released - no UNKNOWN misclassification."""
+    from opaca.persistence.types import AuditEventType
+
     w, proposal = _two_leg_world(tmp_path)
     gw = w.mutate(reject_reason="insufficient shares")
-    result = _execute(w, proposal, gw)
-    assert gw.submit_calls == 1, "the loop stops after the rejection"
+    _execute(w, proposal, gw)
+    assert gw.submit_calls == 1
     rows = {r.leg_index: r for r in w.store.list_execution_orders(proposal_id="m1")}
     assert rows[0].state is ExecutionState.REJECTED
-    stranded = rows[1]
-    assert stranded.state is ExecutionState.SUBMITTING, "probe assumption"
-    assert stranded.broker_order_id is None, "leg 1 never reached the broker"
-    # reservations for BOTH legs are retained because leg 1 is not terminal
-    assert active_sell_qty(w.store, "SGOV") == Decimal("10")
-    assert active_sell_qty(w.store, "BIL") == Decimal("1")
-    # recovery cannot tell "never sent" from "lost": it becomes UNKNOWN
-    recovered = recover_proposal(w.store, w.read(), "m1", now=DEFAULT_NOW)
+    assert rows[1].state is ExecutionState.NOT_SUBMITTED
+    assert rows[1].state is not ExecutionState.UNKNOWN_REQUIRES_RECONCILIATION
+    assert rows[1].broker_order_id is None
+    assert active_sell_qty(w.store, "SGOV") == Decimal("0")
+    assert active_sell_qty(w.store, "BIL") == Decimal("0")
+    reasons = [
+        e.reason for e in w.store.list_audit(proposal_id="m1")
+        if e.event_type is AuditEventType.ORDER_NOT_SUBMITTED
+    ]
+    assert reasons and all("rejected by broker" in r for r in reasons), reasons
+    # and recovery leaves it terminal rather than reclassifying it as UNKNOWN
+    recover_proposal(w.store, w.read(), "m1", now=DEFAULT_NOW)
     after = {r.leg_index: r for r in w.store.list_execution_orders(proposal_id="m1")}
+    assert after[1].state is ExecutionState.NOT_SUBMITTED
     w.close()
-    assert after[1].state is ExecutionState.UNKNOWN_REQUIRES_RECONCILIATION
-    assert recovered.blocked is True
-    pytest.fail(
-        "FINDING P1-3: a REJECTED first leg leaves every later leg stranded in "
-        "SUBMITTING for an order that was never sent. Recovery reclassifies it as "
-        "UNKNOWN_REQUIRES_RECONCILIATION, which permanently retains the whole "
-        "proposal's reservations and requires human review for an order that does not "
-        "exist. Fail-closed, but the account jams and only manual intervention clears it."
-    )
 
 
 def test_m04_cross_proposal_isolation_under_concurrency(tmp_path):
@@ -216,28 +214,31 @@ def test_m07_a_blocked_attempt_leaves_the_proposal_executable_later(tmp_path):
     w.close()
 
 
-def test_FINDING_kill_switch_flipped_after_revalidation_still_submits(tmp_path):
-    """The kill switch is checked inside the intent transaction, then the broker call
-    happens outside it. A flip in that window is not seen."""
+def test_the_kill_switch_is_re_read_immediately_before_submit(tmp_path):
+    """CLOSED at cd3dc86 (was P3-1). The switch is read again inside _submit_leg,
+    after the intent transaction has committed, so a flip in that window stops the
+    order. A flip *after* the broker call is a different case and is covered by
+    test_retest_cd3dc86.py::TestP31KillSwitch."""
+    import traceback
+
     w = world(tmp_path)
     proposal = sell("s1", "10")
     reserve(w, proposal)
     gw = w.mutate()
-    original = gw.submit_order
+    real = w.store.kill_switch_active
+    seen: list[str] = []
 
-    def flip_then_submit(request):
-        w.store.set_kill_switch(True, now=DEFAULT_NOW)
-        return original(request)
+    def staged(*a, **kw):
+        caller = traceback.extract_stack()[-2].name
+        seen.append(caller)
+        return caller == "_submit_leg"
 
-    gw.submit_order = flip_then_submit  # type: ignore[method-assign]
+    w.store.kill_switch_active = staged  # type: ignore[method-assign]
     result = _execute(w, proposal, gw)
+    w.store.kill_switch_active = real  # type: ignore[method-assign]
+    assert "_submit_leg" in seen, f"no last-moment read; reads seen: {seen}"
+    assert gw.submit_calls == 0
+    record = w.store.get_execution_order(proposal.legs[0].client_order_id)
+    assert record is not None and record.state is ExecutionState.NOT_SUBMITTED
+    assert result.blocked is True
     w.close()
-    assert gw.submit_calls == 1, "probe assumption"
-    assert result.state is ExecutionState.FILLED
-    pytest.fail(
-        "FINDING P3-1: the kill switch is evaluated inside the submission-intent "
-        "transaction and is not re-checked immediately before mutate_gateway."
-        "submit_order(), so a flip inside that window does not stop the order. The "
-        "window is small and closing it fully is impossible against a remote broker, "
-        "but a last-moment re-read costs one row."
-    )

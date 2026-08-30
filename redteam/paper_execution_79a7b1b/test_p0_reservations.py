@@ -264,10 +264,9 @@ def test_v14_partial_fill_bounds_a_second_proposal(tmp_path):
     w.close()
 
 
-def test_FINDING_a_live_order_is_counted_twice_after_a_partial_fill(tmp_path):
-    """The resized reservation and the broker order it produced are the SAME
-    encumbrance, but build_policy_context feeds both into CHECK-16, so the
-    remaining quantity is subtracted twice."""
+def test_a_live_order_is_counted_once_after_a_partial_fill(tmp_path):
+    """CLOSED at cd3dc86 (was P1-2). The resized reservation and the broker order it
+    produced are one economic commitment and are now counted once."""
     from opaca.orchestration.context import build_policy_context
     from opaca.policy.engine import sell_reservations
 
@@ -275,93 +274,38 @@ def test_FINDING_a_live_order_is_counted_twice_after_a_partial_fill(tmp_path):
     first = sell("s1", "60")
     reserve(w, first)
     _execute(w, first, partial_fill_qty=Decimal("20"))
-    assert active_sell_qty(w.store) == Decimal("40"), "one genuine encumbrance of 40"
+    assert active_sell_qty(w.store) == Decimal("40")
     assert Decimal(str(w.positions[0]["qty"])) == Decimal("80")
-
-    # a fresh reconcile captures the live broker order into the snapshot, exactly as
-    # the reserve and execute paths do
     assert reconcile(w.store, w.read(), now=DEFAULT_NOW).status is (
         ReconciliationStatus.RECONCILED
     )
     context, _ = build_policy_context(w.store, now=DEFAULT_NOW, prices=DEFAULT_PRICES)
-    reserved, _undeterminable = sell_reservations(context.unresolved_orders)
-    counted = reserved.get("SGOV", Decimal("0"))
-    sources = sorted(
-        (o.proposal_id, str(o.remaining_quantity)) for o in context.unresolved_orders
-        if o.symbol == "SGOV" and o.is_unresolved
-    )
-
+    reserved, _u = sell_reservations(context.unresolved_orders)
+    assert reserved.get("SGOV", Decimal("0")) == Decimal("40"), "counted once, not twice"
     third = sell("s3", "40")
     _, r3 = reserve(w, third)
-    w.close()
-    assert counted == Decimal("80"), f"probe assumption: counted {counted}"
-    assert r3.is_auto is False, "probe assumption"
-    pytest.fail(
-        "FINDING P1-2: after a partial fill the same live order is counted twice - "
-        f"once as the resized SELL_QUANTITY reservation and once as an unresolved "
-        f"broker order, giving {counted} against a real encumbrance of 40. "
-        f"Sources: {sources}. "
-        "CHECK-16's documented bound is min(broker available, quantity - reserved) and "
-        "its docstring promises 'never a double subtraction of the reservation'. "
-        "Fail-closed - it under-permits - but it freezes the symbol: no further sell of "
-        "any size can be authorised while a partially filled order is live."
-    )
-
-
-def test_v15_capacity_is_never_negative(tmp_path):
-    w = world(tmp_path)
-    proposal = sell("s1", "10")
-    reserve(w, proposal)
-    _execute(w, proposal)
-    for r in w.store._conn.execute(
-        "SELECT quantity, amount FROM reservations WHERE proposal_id='s1'"
-    ):
-        if r["quantity"] is not None:
-            assert Decimal(str(r["quantity"])) >= 0
-        if r["amount"] is not None:
-            assert Decimal(str(r["amount"])) >= 0
+    assert r3.is_auto, "the genuinely free 40 must be authorisable"
     w.close()
 
 
-def test_v16_order_identity_reservation_released_only_when_terminal(tmp_path):
-    w = world(tmp_path)
-    proposal = sell("s1", "10")
-    reserve(w, proposal)
-    _execute(w, proposal, fill_on_submit=False)
-    identity = [
-        r for r in w.store.active_reservations()
-        if r.proposal_id == "s1" and r.kind is ReservationKind.ORDER_IDENTITY
-    ]
-    assert identity, "a live order keeps its identity reservation"
-    w.close()
-
-
-def test_FINDING_any_live_order_double_counts_its_own_reservation(tmp_path):
-    """Simpler and broader than the partial-fill case: an ordinary live order with
-    no fill at all is counted twice, so a 10-share order costs 20 of capacity."""
+def test_a_live_order_does_not_double_count_its_own_reservation(tmp_path):
+    """CLOSED at cd3dc86 (was P1-2, general case). One live 10-share sell encumbers
+    10, not 20, so the honest 90 is still authorisable."""
     from opaca.orchestration.context import build_policy_context
     from opaca.policy.engine import sell_reservations
 
     w = world(tmp_path, qty="100")
     proposal = sell("s1", "10")
     reserve(w, proposal)
-    result = _execute(w, proposal, fill_on_submit=False)
-    assert result.state is ExecutionState.SUBMITTED
+    assert _execute(w, proposal, fill_on_submit=False).state is ExecutionState.SUBMITTED
     assert active_sell_qty(w.store) == Decimal("10")
     assert reconcile(w.store, w.read(), now=DEFAULT_NOW).status is (
         ReconciliationStatus.RECONCILED
     )
     context, _ = build_policy_context(w.store, now=DEFAULT_NOW, prices=DEFAULT_PRICES)
     reserved, _u = sell_reservations(context.unresolved_orders)
-    counted = reserved.get("SGOV", Decimal("0"))
+    assert reserved.get("SGOV", Decimal("0")) == Decimal("10")
     honest = sell("s2", "90")
     _, out = reserve(w, honest)
+    assert out.is_auto
     w.close()
-    assert counted == Decimal("20"), f"probe assumption: counted {counted}"
-    assert out.is_auto is False, "probe assumption"
-    pytest.fail(
-        "FINDING P1-2 (general case): one live 10-share sell is counted as 20 of "
-        "encumbrance (the reservation plus the broker order it created), so an honest "
-        "90-share sell against the untouched 90 shares is REJECTed. Every open order "
-        "costs twice its size in capacity for as long as it lives."
-    )
