@@ -1,10 +1,12 @@
 # Opaca — red-team suite
 
-Two phases of adversarial review live here:
+Three phases of adversarial review live here:
 
 * `redteam/*.py` + `closeout_bc5fcda/` — **Treasury Core** (`feat/treasury-core`)
 * `reconciliation_3fdabf3/` — **Phase 2 reconciliation state + SQLite atomic
   reservation** (`feat/reconciliation-state`)
+* `paper_execution_79a7b1b/` — **Phase 3 paper execution lifecycle**
+  (`feat/paper-execution`)
 
 Each subdirectory carries its own README, and every suite runs against a
 checkout of the commit it reviews, never against this branch.
@@ -222,3 +224,48 @@ Remaining: one P3 (`__self__` introspection escape) and seven P2 observations,
 all fail-closed and all now recorded by the builder in `docs/backlog.md`.
 
 Full report: `claude/reconciliation-state-closeout-624439f.md`.
+
+---
+
+## Phase 3 — paper execution @ 79a7b1b
+
+Target: `origin/feat/paper-execution @ 79a7b1b837c86dc700533eeda6f5699b197a7d4a`
+(`feat: implement safe Alpaca paper execution lifecycle`), on production baseline
+`main @ 12f4eb02f9c832f7368cc0c06f67afaf4bb1d7d8`.
+
+    git worktree add --detach /tmp/pe 79a7b1b837c86dc700533eeda6f5699b197a7d4a
+    OPACA_BACKEND=/tmp/pe/backend pytest -q redteam/paper_execution_79a7b1b
+    #   -> 94 passed, 7 failed
+    OPACA_BACKEND=/tmp/pe/backend pytest -q redteam/
+    #   -> 719 passed, 14 failed
+
+**94 passed / 7 findings.** Verdict: **PASS WITH FINDINGS**, **FIX THEN RETEST**.
+
+This is the first phase that can place an order. Reviewed **offline only** — no
+credentials requested, no live call, and **no mutation of any kind performed**,
+including against the paper endpoint.
+
+The mutation surface is two call sites, both in `execution/service.py`, both on
+the injected `mutate_gateway`. No attack produced a duplicate order, an oversell,
+an over-release, a submission under a closed gate, or a live-endpoint call.
+
+Two Phase 2 findings are **closed** by this phase: reservations are now released
+against proven disposition, and the permanent opposing-buy lockout is gone.
+
+Five findings, all fail-closed:
+
+| id | summary |
+| --- | --- |
+| P1-1 | `compare_state` skips the explained-delta comparison when the raw position delta is zero |
+| P1-2 | every live order is counted twice against its own capacity (reservation + broker order) |
+| P1-3 | a REJECTED first leg strands later legs in `SUBMITTING` for orders never sent |
+| P2-1 | a bare `assert` reappeared in `backend/opaca/`, regressing a control closed at `bc5fcda` |
+| P3-1 | the kill switch is not re-read immediately before `submit_order` |
+
+Five probes in the earlier suites were **retargeted**, not relaxed, because the
+phase boundary legitimately moved: the "no mutation anywhere" scan became a scope
+assertion on call sites and receivers; the dynamic-dispatch allow-list gained the
+Phase 3 guard function; two schema assertions pinned to a literal `1` now compare
+against `SCHEMA_VERSION`; and the two Phase 2 findings listed above were inverted.
+
+Full report: `claude/paper-execution-redteam-79a7b1b.md`.

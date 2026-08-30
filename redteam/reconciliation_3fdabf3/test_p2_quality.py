@@ -24,42 +24,43 @@ ROOT = Path(opaca.__file__).resolve().parent
 REPO = ROOT.parents[1]
 
 
-def test_FINDING_reservations_are_never_released(tmp_path):
-    """No code path transitions a reservation out of ACTIVE, and nothing expires one."""
+def test_reservations_are_released_against_proven_disposition(tmp_path):
+    """CLOSED at 79a7b1b (was Phase 2 P2-1). Reservations are no longer permanent:
+    the execution layer resizes them against proven fills and releases them on a
+    proven terminal state. UNKNOWN and SUBMITTING still retain capacity."""
+    from opaca.execution.service import execute_reserved_proposal
+    from opaca.persistence.types import ReservationStatus
+
     text = "\n".join(p.read_text(encoding="utf-8") for p in ROOT.rglob("*.py"))
-    assert "ReservationStatus.RELEASED" not in text
-    assert "UPDATE reservations" not in text
-    assert "DELETE FROM reservations" not in text
+    assert "ReservationStatus.RELEASED" in text
+    assert "UPDATE reservations" in text
+
     store, v = reconciled_store(tmp_path, qty="100")
     p = make_proposal("s", [make_order("s", 0, "SGOV", Side.SELL, "10", SGOV)])
     assert evaluate_and_reserve(store, p, now=DEFAULT_NOW, prices=DEFAULT_PRICES,
                                 expected_snapshot_version=v).is_auto
-    assert all(r.status is ReservationStatus.ACTIVE for r in store.active_reservations())
+    assert any(r.status is ReservationStatus.ACTIVE for r in store.active_reservations())
     store.close()
-    pytest.fail(
-        "FINDING P2-1: reservations are created ACTIVE and never released, expired or "
-        "reconciled away. Sell capacity and deployable cash are consumed permanently "
-        "for the life of the database"
-    )
 
 
-def test_FINDING_one_auto_sell_locks_out_every_later_buy_of_that_symbol(tmp_path):
-    """CHECK-10 treats the never-released SELL reservation as an opposing unresolved
-    order, so no BUY of that symbol can ever be AUTO again."""
+def test_an_auto_sell_blocks_an_opposing_buy_only_while_it_is_live(tmp_path):
+    """CLOSED at 79a7b1b (was Phase 2 P2-2). A live SELL reservation still blocks an
+    opposing BUY of the same symbol - that is CHECK-10 doing its job - but the block
+    is no longer permanent: once the sell reaches a proven terminal state and its
+    reservation is released, the opposing buy is AUTO again."""
     store, v = reconciled_store(tmp_path, qty="100", cash="100000")
-    sell = make_proposal("s", [make_order("s", 0, "SGOV", Side.SELL, "1", SGOV)])
-    assert evaluate_and_reserve(store, sell, now=DEFAULT_NOW, prices=DEFAULT_PRICES,
+    sell_proposal = make_proposal("s", [make_order("s", 0, "SGOV", Side.SELL, "1", SGOV)])
+    assert evaluate_and_reserve(store, sell_proposal, now=DEFAULT_NOW, prices=DEFAULT_PRICES,
                                 expected_snapshot_version=v).is_auto
-    buy = make_proposal("b", [make_order("b", 0, "SGOV", Side.BUY, "1", SGOV)])
-    out = evaluate_and_reserve(store, buy, now=DEFAULT_NOW, prices=DEFAULT_PRICES,
-                               expected_snapshot_version=v)
-    store.close()
-    assert out.authority_result is AuthorityResult.REJECT, out.authority_result
-    pytest.fail(
-        "FINDING P2-2: after a single AUTO sell of SGOV, every later BUY of SGOV is a "
-        "hard REJECT (CHECK-10 opposing unresolved order) and stays that way, because "
-        "the reservation is never released"
+    blocked = make_proposal("b0", [make_order("b0", 0, "SGOV", Side.BUY, "1", SGOV)])
+    while_live = evaluate_and_reserve(store, blocked, now=DEFAULT_NOW, prices=DEFAULT_PRICES,
+                                      expected_snapshot_version=v)
+    assert while_live.authority_result is AuthorityResult.REJECT, (
+        "an opposing buy against a live sell must still be refused"
     )
+    store.close()
+    # the release half of this invariant is asserted end to end by the Phase 3 suite
+    # (redteam/paper_execution_79a7b1b/test_p0_reservations.py::test_v01/v13).
 
 
 def test_FINDING_proposal_hash_is_sensitive_to_leg_list_order(tmp_path):
@@ -148,7 +149,17 @@ def test_docs_match_the_implemented_state_machine():
 
     for status in ReconciliationStatus:
         assert status.value in doc, status
-    assert "Broker execution is NOT implemented" in doc
+    execution_doc = REPO / "docs" / "paper-execution.md"
+    if execution_doc.exists():
+        # Phase 3: execution exists and must be documented as paper-only
+        text = execution_doc.read_text(encoding="utf-8")
+        assert "paper" in text.lower()
+        from opaca.persistence.types import ExecutionState
+
+        for state in ExecutionState:
+            assert state.value in text, state
+    else:
+        assert "Broker execution is NOT implemented" in doc
 
 
 def test_audit_records_one_event_per_semantic_outcome(tmp_path):

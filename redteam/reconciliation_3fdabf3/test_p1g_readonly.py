@@ -45,15 +45,43 @@ def test_g1_no_http_client_imports_anywhere_in_the_package():
     assert offenders == [], offenders
 
 
-def test_g2_no_mutating_attribute_access_or_call_anywhere():
-    offenders = []
+def test_g2_mutation_is_confined_to_the_sanctioned_execution_surface():
+    """Phase 3 introduces a paper mutation surface. It must stay inside the two
+    modules that are allowed to have one, and the read-only path must have none.
+
+    Retargeted from the Phase 2 assertion "no mutation anywhere": that statement
+    became false by design at 79a7b1b. The invariant is now scope, not absence,
+    and it is asserted on CALL SITES and their receiver, not on name mentions.
+    """
+    SANCTIONED_CALLERS = {"execution/service.py"}
+    SANCTIONED_RECEIVERS = {"mutate_gateway"}
+    call_sites = []
     for path in SOURCES:
+        rel = path.relative_to(ROOT).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            if isinstance(node, ast.Attribute) and node.attr in MUTATING_NAMES:
-                offenders.append(f"{path.name}:{node.lineno} .{node.attr}")
-    # the only permitted mentions are the guard's own literal name set
-    assert offenders == [], offenders
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                continue
+            if node.func.attr not in MUTATING_NAMES:
+                continue
+            receiver = node.func.value
+            receiver_name = receiver.id if isinstance(receiver, ast.Name) else ast.dump(receiver)
+            call_sites.append((rel, node.func.attr, receiver_name))
+
+    for rel, attr, receiver in call_sites:
+        assert rel in SANCTIONED_CALLERS, f"mutation call outside the execution service: {rel}.{attr}"
+        assert receiver in SANCTIONED_RECEIVERS, (
+            f"mutation called on an unsanctioned receiver: {rel} {receiver}.{attr}"
+        )
+    called = {attr for _rel, attr, _r in call_sites}
+    assert called <= {"submit_order", "cancel_order_by_id"}, called
+    # the read-only path itself must remain entirely free of mutation calls
+    read_only_modules = {
+        "broker/gateway.py", "broker/alpaca.py", "broker/adapters.py",
+        "reconciliation/service.py", "orchestration/reserve.py",
+        "orchestration/context.py", "policy/engine.py",
+    }
+    assert not [c for c in call_sites if c[0] in read_only_modules]
 
 
 def test_g3_no_dynamic_dispatch_reaches_a_broker_object():
@@ -102,6 +130,14 @@ def test_g3_no_dynamic_dispatch_reaches_a_broker_object():
             "gateway",
             "gateway_type",
         }:
+            continue
+        # the Phase 3 execution guard, same pattern: it walks the forbidden name set
+        # over a candidate gateway in order to REFUSE it
+        if (
+            offender["module"] == "execution/gateway.py"
+            and offender["function"] == "assert_paper_execution_gateway"
+            and offender["target"] == "gateway"
+        ):
             continue
         raise AssertionError(f"dynamic dispatch onto a non-self target: {offender}")
 

@@ -16,6 +16,7 @@ from opaca.persistence.codec import (
     dump_decimal,
     load_decimal,
 )
+from opaca.persistence.schema import SCHEMA_VERSION
 from opaca.persistence.store import PersistenceError, SQLiteStore
 
 from probe_support import (
@@ -165,7 +166,7 @@ def test_d9_bootstrap_is_idempotent(tmp_path):
     store.close()
     for _ in range(5):
         again = SQLiteStore(path)
-        assert again.schema_version() == 1
+        assert again.schema_version() == SCHEMA_VERSION
         again.close()
     check = SQLiteStore(path)
     assert check._conn.execute(
@@ -179,7 +180,7 @@ def test_d9_bootstrap_is_idempotent(tmp_path):
     check.close()
 
 
-@pytest.mark.parametrize("version", [0, 2, 99, -1])
+@pytest.mark.parametrize("version", [0, 99, -1, SCHEMA_VERSION + 1, SCHEMA_VERSION - 1])
 def test_d10_wrong_schema_version_fails_closed(tmp_path, version):
     store = temp_store(tmp_path)
     path = store.path
