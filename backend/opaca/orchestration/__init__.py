@@ -1,4 +1,4 @@
-"""Atomic reservation orchestration. Broker execution is not implemented."""
+"""Atomic reservation orchestration. Submission lives in ``opaca.execution``."""
 
 from opaca.orchestration.reserve import (
     OrchestrationResult,

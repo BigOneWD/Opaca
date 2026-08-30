@@ -1,4 +1,8 @@
-"""Architectural guard: this phase has no broker mutation surface."""
+"""Architectural guard: read-only path has no broker mutation surface.
+
+Paper ``submit_order`` / ``cancel_order_by_id`` exist only on the separate
+execution gateway (``opaca.broker.paper_execution`` / ``opaca.execution``).
+"""
 
 from __future__ import annotations
 

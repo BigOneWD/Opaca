@@ -22,6 +22,15 @@ GUARD_FILES = frozenset(
         str(PRODUCTION_ROOT / "broker" / "mutation.py"),
         str(PRODUCTION_ROOT / "broker" / "gateway.py"),
         str(PRODUCTION_ROOT / "broker" / "alpaca.py"),
+        str(PRODUCTION_ROOT / "broker" / "paper_execution.py"),
+        str(PRODUCTION_ROOT / "execution" / "gateway.py"),
+        str(PRODUCTION_ROOT / "execution" / "service.py"),
+    }
+)
+SUBMIT_IMPL_FILES = frozenset(
+    {
+        str(PRODUCTION_ROOT / "broker" / "paper_execution.py"),
+        str(PRODUCTION_ROOT / "execution" / "gateway.py"),
     }
 )
 
@@ -127,6 +136,32 @@ class TestMutationScan:
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
                 called.add(node.func.attr)
         assert not (called & FORBIDDEN_BROKER_MUTATIONS)
+
+    def test_submit_order_impl_only_on_execution_gateway(self) -> None:
+        impls: list[str] = []
+        for path in PRODUCTION_ROOT.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef) and node.name == "submit_order":
+                    impls.append(str(path))
+        assert set(impls) <= SUBMIT_IMPL_FILES
+        assert str(PRODUCTION_ROOT / "broker" / "paper_execution.py") in impls
+
+    def test_execution_mutation_scan_no_live_endpoint_or_generic_client(self) -> None:
+        live = "https://api.alpaca.markets"
+        for rel in ("execution/gateway.py", "broker/paper_execution.py", "execution/service.py"):
+            source = (PRODUCTION_ROOT / rel).read_text(encoding="utf-8")
+            tree = ast.parse(source)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Constant) and node.value == live:
+                    if rel == "execution/service.py":
+                        continue
+                    raise AssertionError(f"{rel} embeds live endpoint")
+            assert "getattr(" not in source or rel == "execution/gateway.py"
+        service = (PRODUCTION_ROOT / "execution" / "service.py").read_text(encoding="utf-8")
+        assert "LIVE_ENDPOINT" in service
+        gateway_src = (PRODUCTION_ROOT / "execution" / "gateway.py").read_text(encoding="utf-8")
+        assert "LIVE_ENDPOINT" in gateway_src
 
     def test_no_credentials_in_fixtures_or_source(self) -> None:
         forbidden_literals = ('secret_key="', "secret_key='", "AKIA")

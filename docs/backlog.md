@@ -11,9 +11,9 @@ introspection if a future adapter could smuggle a client that way.
 
 ## Reservation lifecycle / release
 
-Reservation release against proven broker terminal/fill state is an
-execution-phase feature. This phase retains reservations under
-uncertainty and does not implement release.
+Implemented in Phase 3 paper execution (`opaca.execution`): resize/release
+against proven broker fill/terminal state. UNKNOWN and SUBMITTING still
+retain capacity. Do not release merely because a request timed out.
 
 ## Leg-order-sensitive `proposal_hash`
 

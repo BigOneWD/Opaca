@@ -12,6 +12,7 @@ from opaca.domain.models import (
     AuthorityResult,
     BrokerCashState,
     Position,
+    Side,
 )
 from opaca.treasury.scenario import ScenarioSeed
 
@@ -48,6 +49,22 @@ class AuditEventType(StrEnum):
     BROKER_UNAVAILABLE = "BROKER_UNAVAILABLE"
     INVALID_BROKER_STATE = "INVALID_BROKER_STATE"
     IDEMPOTENT_REPLAY = "IDEMPOTENT_REPLAY"
+    EXECUTION_REVALIDATED = "EXECUTION_REVALIDATED"
+    SUBMISSION_INTENT_CREATED = "SUBMISSION_INTENT_CREATED"
+    ORDER_SUBMITTED = "ORDER_SUBMITTED"
+    ORDER_ACKNOWLEDGED = "ORDER_ACKNOWLEDGED"
+    ORDER_UNKNOWN = "ORDER_UNKNOWN"
+    ORDER_RECOVERED = "ORDER_RECOVERED"
+    PARTIAL_FILL = "PARTIAL_FILL"
+    FULL_FILL = "FULL_FILL"
+    ORDER_REJECTED = "ORDER_REJECTED"
+    ORDER_CANCELLED = "ORDER_CANCELLED"
+    RESERVATION_RESIZED = "RESERVATION_RESIZED"
+    RESERVATION_RELEASED = "RESERVATION_RELEASED"
+    SETTLEMENT_CREATED = "SETTLEMENT_CREATED"
+    SETTLEMENT_COMPLETED = "SETTLEMENT_COMPLETED"
+    HUMAN_APPROVAL_GRANTED = "HUMAN_APPROVAL_GRANTED"
+    EXECUTION_BLOCKED = "EXECUTION_BLOCKED"
 
 
 class ReconciliationStatus(StrEnum):
@@ -148,6 +165,39 @@ class UnknownOrderRecord:
     created_at: datetime
 
 
+class ExecutionState(StrEnum):
+    READY = "READY"
+    SUBMITTING = "SUBMITTING"
+    SUBMITTED = "SUBMITTED"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    FILLED = "FILLED"
+    CANCEL_PENDING = "CANCEL_PENDING"
+    CANCELLED = "CANCELLED"
+    REJECTED = "REJECTED"
+    UNKNOWN_REQUIRES_RECONCILIATION = "UNKNOWN_REQUIRES_RECONCILIATION"
+
+
+@dataclass(frozen=True)
+class ExecutionOrderRecord:
+    client_order_id: str
+    proposal_id: str
+    leg_index: int
+    symbol: str
+    side: Side
+    quantity: Decimal
+    filled_quantity: Decimal
+    remaining_quantity: Decimal
+    state: ExecutionState
+    broker_order_id: str | None
+    last_broker_status: str | None
+    filled_avg_price: Decimal | None
+    reference_price: Decimal
+    reconciled_filled_quantity: Decimal
+    settled_proceeds: Decimal
+    created_at: datetime
+    updated_at: datetime
+
+
 @dataclass(frozen=True)
 class LocalLedger:
     scenario: ScenarioSeed | None
@@ -155,3 +205,4 @@ class LocalLedger:
     reservations: tuple[ReservationRecord, ...]
     unknown_orders: tuple[UnknownOrderRecord, ...]
     settlement_as_of: date
+    execution_orders: tuple[ExecutionOrderRecord, ...] = ()

@@ -176,6 +176,7 @@ def build_policy_context(
     calendar: TradingCalendar = US_TRADING_CALENDAR,
     conn: sqlite3.Connection | None = None,
     environment_verified: bool = True,
+    excluding_proposal_id: str | None = None,
 ) -> tuple[PolicyContext, PersistedSnapshot]:
     snapshot = store.latest_snapshot(conn=conn)
     if snapshot is None:
@@ -189,6 +190,11 @@ def build_policy_context(
         raise PersistenceError("scenario has not been seeded")
     reservations = store.active_reservations(conn=conn)
     unknown = store.load_unknown_orders(conn=conn)
+    if excluding_proposal_id is not None:
+        reservations = tuple(
+            item for item in reservations if item.proposal_id != excluding_proposal_id
+        )
+        unknown = tuple(item for item in unknown if item.proposal_id != excluding_proposal_id)
     obligations = store.load_obligations(conn=conn) + _cash_reservation_obligations(
         reservations, now
     )
@@ -215,7 +221,9 @@ def build_policy_context(
             now=now,
         ),
         unresolved_orders=unresolved,
-        autonomous_history=store.load_autonomous_history(conn=conn),
+        autonomous_history=store.load_autonomous_history(
+            conn=conn, exclude_proposal_id=excluding_proposal_id
+        ),
         calendar=calendar,
     )
     return context, snapshot

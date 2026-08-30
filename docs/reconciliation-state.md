@@ -1,7 +1,7 @@
 # Reconciliation + SQLite atomic state
 
-This phase sits on top of the closed Treasury Core. It does **not** submit,
-cancel, or replace broker orders. Broker execution is **not implemented**.
+This phase sits on top of the closed Treasury Core. Paper execution is a
+later layer (`docs/paper-execution.md`) and must not weaken these contracts.
 
 ```text
 READ → RECONCILE → EVALUATE → RESERVE → PERSIST
@@ -277,9 +277,9 @@ Default tests are offline (`FakeAlpacaGateway`). Live paper smoke runs only
 with `pytest --live-paper` and present credentials, and contains no mutation
 calls.
 
-## Explicit non-implementation
+## Explicit non-implementation (this layer)
 
-**Broker execution is NOT implemented.** There is no `submit_order`,
-cancel/replace, live trading, LLM proposal generation, FastAPI, UI, MCP,
-scheduler, or options/crypto path in this layer. Reservation release against
-real broker fills is deferred to the execution phase.
+This reconciliation/reservation layer does not submit. Paper execution is
+implemented separately in `opaca.execution` (`docs/paper-execution.md`).
+There is still no live trading, LLM proposal generation, FastAPI, UI, MCP,
+scheduler, or options/crypto path.
