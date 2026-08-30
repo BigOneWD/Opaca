@@ -1,8 +1,7 @@
-"""Opaca deterministic treasury core.
+"""Opaca deterministic treasury core plus read-only reconciliation state.
 
-Phase 0/1 scope only: no AI reasoning, no broker mutation. See docs/SPEC.md
-(frozen spec) and docs/treasury-core.md for the domain invariants implemented
-by this package.
+No AI reasoning. No broker mutation. See docs/SPEC.md, docs/treasury-core.md,
+and docs/reconciliation-state.md.
 """
 
 __version__ = "0.1.0"

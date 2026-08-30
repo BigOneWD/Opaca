@@ -1,13 +1,19 @@
 [project]
 name = "opaca"
 version = "0.1.0"
-description = "Opaca deterministic treasury core: broker cash, dated obligations, settlement-aware liquidity, TreasuryGuard policy, authority."
+description = "Opaca treasury core plus read-only Alpaca reconciliation and atomic SQLite reservation."
 requires-python = ">=3.11"
 dependencies = []
+
+[project.optional-dependencies]
+paper = ["alpaca-py==0.33.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+  "live_paper: optional live PAPER read-only smoke (requires credentials)",
+]
 
 [tool.ruff]
 line-length = 100
@@ -30,3 +36,7 @@ python_version = "3.11"
 strict = true
 files = ["opaca", "tests"]
 mypy_path = "."
+
+[[tool.mypy.overrides]]
+module = "alpaca.*"
+ignore_missing_imports = true

@@ -14,5 +14,12 @@ venv/
 .env.*
 *.env
 
+# Local SQLite state — never commit
+*.sqlite
+*.sqlite3
+*.db
+*.sqlite-wal
+*.sqlite-shm
+
 # OS
 .DS_Store
