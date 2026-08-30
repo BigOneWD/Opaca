@@ -163,6 +163,15 @@ class TestMutationScan:
         gateway_src = (PRODUCTION_ROOT / "execution" / "gateway.py").read_text(encoding="utf-8")
         assert "LIVE_ENDPOINT" in gateway_src
 
+    def test_no_bare_assert_in_production(self) -> None:
+        offenders: list[str] = []
+        for path in PRODUCTION_ROOT.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assert):
+                    offenders.append(f"{path.relative_to(BACKEND_ROOT)}:{node.lineno}")
+        assert offenders == []
+
     def test_no_credentials_in_fixtures_or_source(self) -> None:
         forbidden_literals = ('secret_key="', "secret_key='", "AKIA")
         for path in PRODUCTION_ROOT.rglob("*.py"):

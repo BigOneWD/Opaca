@@ -45,3 +45,25 @@ being imported onto the application path.
 Default pytest is offline. Live paper smoke is opt-in (`--live-paper`).
 A CI/gate miss that runs live tests without intending to, or skips the
 offline suite, is still an operational risk.
+
+## Duplicate `client_order_id` detection wording
+
+Alpaca duplicate-order detection currently string-matches broker error
+wording. The safe fallback is UNKNOWN (lookup, never a second submit).
+Harden if Alpaca changes the error text.
+
+## Real broker partial fill
+
+Paper execution resizes reservations from local/fake partial fills.
+A real Alpaca partial fill has not yet been observed on the live paper
+account.
+
+## Schema migration
+
+SQLite schema is bootstrapped at the current version. A forward-migration
+path for existing files is not in this phase.
+
+## Synthetic live-test pricing
+
+Live paper mutation smoke uses a fixed 1-share SGOV path. Synthetic
+live-test pricing for broader symbols is not in this phase.

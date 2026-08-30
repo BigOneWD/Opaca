@@ -239,17 +239,23 @@ def compare_state(
         prev_qty = {position.symbol: position.quantity for position in previous.positions}
         curr_qty = {position.symbol: position.quantity for position in positions}
         explained = _explained_position_delta(execution_orders)
-        symbols = set(prev_qty) | set(curr_qty)
-        unexplained = False
+        symbols = set(prev_qty) | set(curr_qty) | set(explained)
+        unexplained_reason: str | None = None
         for symbol in symbols:
             delta = curr_qty.get(symbol, ZERO) - prev_qty.get(symbol, ZERO)
-            if delta == ZERO:
+            expected = explained.get(symbol, ZERO)
+            if delta == expected:
                 continue
-            if delta != explained.get(symbol, ZERO):
-                unexplained = True
-                break
-        if unexplained:
-            reasons.append("position quantity changed versus prior snapshot")
+            if delta == ZERO and expected != ZERO:
+                unexplained_reason = (
+                    f"{symbol} locally explained fill {format(expected, 'f')} "
+                    "not reflected in broker position"
+                )
+            else:
+                unexplained_reason = "position quantity changed versus prior snapshot"
+            break
+        if unexplained_reason is not None:
+            reasons.append(unexplained_reason)
             if status is ReconciliationStatus.RECONCILED:
                 status = ReconciliationStatus.DRIFT_DETECTED
 

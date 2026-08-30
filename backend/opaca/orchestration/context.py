@@ -27,6 +27,7 @@ from opaca.domain.models import (
 from opaca.domain.money import ZERO, MoneyError
 from opaca.persistence.store import PersistenceError, SQLiteStore
 from opaca.persistence.types import (
+    ExecutionOrderRecord,
     PersistedSnapshot,
     ReconciliationStatus,
     ReservationKind,
@@ -135,16 +136,65 @@ def _unresolved_from_unknown(records: tuple[UnknownOrderRecord, ...]) -> list[Un
 
 def _unresolved_from_broker_orders(
     snapshot: PersistedSnapshot,
+    *,
+    local_client_order_ids: frozenset[str],
 ) -> list[UnresolvedOrder]:
     orders: list[UnresolvedOrder] = []
     for record in snapshot.orders:
         mapped = OrderState(record.mapped_state)
         if mapped not in UNRESOLVED_ALPACA_STATES:
             continue
+        if record.client_order_id and record.client_order_id in local_client_order_ids:
+            continue
         orders.append(
             adapt_unresolved_order(record, proposal_id=f"broker:{record.client_order_id}")
         )
     return orders
+
+
+def _local_client_order_ids(
+    reservations: tuple[ReservationRecord, ...],
+    unknown: tuple[UnknownOrderRecord, ...],
+    execution_orders: tuple[ExecutionOrderRecord, ...] = (),
+    extra_ids: frozenset[str] = frozenset(),
+) -> frozenset[str]:
+    ids: set[str] = set(extra_ids)
+    for reservation in reservations:
+        if reservation.client_order_id:
+            ids.add(reservation.client_order_id)
+    for record in unknown:
+        if record.client_order_id:
+            ids.add(record.client_order_id)
+    for order in execution_orders:
+        if order.client_order_id:
+            ids.add(order.client_order_id)
+    return frozenset(ids)
+
+
+def _merge_unresolved(orders: list[UnresolvedOrder]) -> tuple[UnresolvedOrder, ...]:
+    grouped: dict[str, list[UnresolvedOrder]] = {}
+    anonymous: list[UnresolvedOrder] = []
+    for order in orders:
+        if not order.client_order_id:
+            anonymous.append(order)
+            continue
+        grouped.setdefault(order.client_order_id, []).append(order)
+    merged: list[UnresolvedOrder] = list(anonymous)
+    for group in grouped.values():
+        if len(group) == 1:
+            merged.append(group[0])
+            continue
+        symbols = {item.symbol for item in group}
+        sides = {item.side for item in group}
+        if len(symbols) != 1 or len(sides) != 1:
+            merged.extend(group)
+            continue
+        undeterminable = [item for item in group if item.remaining_quantity is None]
+        if undeterminable:
+            merged.append(undeterminable[0])
+            continue
+        merged.append(max(group, key=lambda item: item.remaining_quantity or ZERO))
+    return tuple(merged)
 
 
 def _cash_reservation_obligations(
@@ -190,18 +240,37 @@ def build_policy_context(
         raise PersistenceError("scenario has not been seeded")
     reservations = store.active_reservations(conn=conn)
     unknown = store.load_unknown_orders(conn=conn)
+    execution_orders = store.list_execution_orders(conn=conn)
+    excluded_ids: set[str] = set()
     if excluding_proposal_id is not None:
         reservations = tuple(
             item for item in reservations if item.proposal_id != excluding_proposal_id
         )
         unknown = tuple(item for item in unknown if item.proposal_id != excluding_proposal_id)
+        execution_orders = tuple(
+            item for item in execution_orders if item.proposal_id != excluding_proposal_id
+        )
+        excluded_ids.update(
+            leg.client_order_id
+            for leg in store.load_proposal_legs(excluding_proposal_id, conn=conn)
+        )
+        excluded_ids.update(
+            item.client_order_id
+            for item in store.list_execution_orders(conn=conn, proposal_id=excluding_proposal_id)
+        )
     obligations = store.load_obligations(conn=conn) + _cash_reservation_obligations(
         reservations, now
     )
-    unresolved = tuple(
+    local_ids = _local_client_order_ids(
+        reservations,
+        unknown,
+        execution_orders,
+        extra_ids=frozenset(excluded_ids),
+    )
+    unresolved = _merge_unresolved(
         _sell_unresolved_from_reservations(reservations)
         + _unresolved_from_unknown(unknown)
-        + _unresolved_from_broker_orders(snapshot)
+        + _unresolved_from_broker_orders(snapshot, local_client_order_ids=local_ids)
     )
     assets: dict[str, AssetState] = {asset.symbol: asset for asset in snapshot.assets}
     context = PolicyContext(

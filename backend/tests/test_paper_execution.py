@@ -87,6 +87,11 @@ class TestStateMachine:
             validate_transition(ExecutionState.FILLED, ExecutionState.SUBMITTED)
         validate_transition(ExecutionState.READY, ExecutionState.SUBMITTING)
         validate_transition(ExecutionState.SUBMITTING, ExecutionState.SUBMITTED)
+        validate_transition(ExecutionState.SUBMITTING, ExecutionState.NOT_SUBMITTED)
+        with pytest.raises(IllegalTransitionError):
+            validate_transition(
+                ExecutionState.UNKNOWN_REQUIRES_RECONCILIATION, ExecutionState.NOT_SUBMITTED
+            )
 
 
 class TestIdempotency:

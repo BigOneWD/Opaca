@@ -12,6 +12,7 @@ TERMINAL_STATES: frozenset[ExecutionState] = frozenset(
         ExecutionState.FILLED,
         ExecutionState.CANCELLED,
         ExecutionState.REJECTED,
+        ExecutionState.NOT_SUBMITTED,
     }
 )
 
@@ -33,6 +34,7 @@ LEGAL_TRANSITIONS: dict[ExecutionState, frozenset[ExecutionState]] = {
             ExecutionState.PARTIALLY_FILLED,
             ExecutionState.FILLED,
             ExecutionState.REJECTED,
+            ExecutionState.NOT_SUBMITTED,
             ExecutionState.UNKNOWN_REQUIRES_RECONCILIATION,
         }
     ),
@@ -75,6 +77,7 @@ LEGAL_TRANSITIONS: dict[ExecutionState, frozenset[ExecutionState]] = {
     ExecutionState.FILLED: frozenset(),
     ExecutionState.CANCELLED: frozenset(),
     ExecutionState.REJECTED: frozenset(),
+    ExecutionState.NOT_SUBMITTED: frozenset(),
 }
 
 _ALPACA_TO_EXECUTION: dict[OrderState, ExecutionState] = {

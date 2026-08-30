@@ -4,6 +4,7 @@ from opaca.execution.errors import (
     DuplicateSubmissionError,
     ExecutionBlockedError,
     ExecutionError,
+    ExecutionInvariantError,
     IllegalTransitionError,
 )
 from opaca.execution.gateway import (
@@ -26,6 +27,7 @@ __all__ = [
     "DuplicateSubmissionError",
     "ExecutionBlockedError",
     "ExecutionError",
+    "ExecutionInvariantError",
     "ExecutionResult",
     "ExecutionState",
     "FakePaperExecutionGateway",

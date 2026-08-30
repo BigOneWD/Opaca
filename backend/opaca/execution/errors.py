@@ -15,3 +15,7 @@ class ExecutionBlockedError(ExecutionError):
 
 class DuplicateSubmissionError(ExecutionError):
     """A second submit was attempted for an existing logical order."""
+
+
+class ExecutionInvariantError(ExecutionError):
+    """A local execution invariant was violated. Fail closed."""

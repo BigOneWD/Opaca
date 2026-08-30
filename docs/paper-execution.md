@@ -18,7 +18,9 @@ evaluate → reserve → fresh recon → TreasuryGuard → authority
 * Immediately before submission: fresh broker reconciliation, latest snapshot,
   TreasuryGuard re-run, authority re-run, reservation validation. Any failure
   is STOP / REVIEW / UNKNOWN — not submit.
-* Kill switch is re-checked inside the submission-intent transaction.
+* Kill switch is re-checked inside the submission-intent transaction and
+  immediately before `submit_order`. A block at that point is proven
+  non-submission (`NOT_SUBMITTED`); it is not broker REJECTED and not UNKNOWN.
 
 ## Gateway boundary
 
@@ -38,14 +40,21 @@ Alpaca max 128). Retry of the same logical leg reuses the id. The execution
 row is persisted **before** the broker call. After a lost response the only
 legal action is lookup by `client_order_id`.
 
+A local reservation and the broker open order for that same `client_order_id`
+are one economic commitment and are counted once. External broker orders,
+unresolved UNKNOWN size, and uncorrelated / ambiguous identities fail closed.
+
 ## State machine
 
 `READY` (reserved, no execution row) → `SUBMITTING` → `SUBMITTED` →
 `PARTIALLY_FILLED` / `FILLED` / `REJECTED` / `CANCEL_PENDING` / `CANCELLED` /
-`UNKNOWN_REQUIRES_RECONCILIATION`.
+`NOT_SUBMITTED` / `UNKNOWN_REQUIRES_RECONCILIATION`.
 
 Illegal transitions fail closed. Terminal states do not resubmit.
-`UNKNOWN_REQUIRES_RECONCILIATION` cannot return to `SUBMITTING`.
+`UNKNOWN_REQUIRES_RECONCILIATION` cannot return to `SUBMITTING` or
+`NOT_SUBMITTED`. If a later leg is never sent because an earlier leg stopped,
+it becomes `NOT_SUBMITTED` (broker submit count 0). Uncertainty after a
+submit attempt remains UNKNOWN.
 
 ## Reservation lifecycle
 
@@ -53,6 +62,7 @@ Illegal transitions fail closed. Terminal states do not resubmit.
 | ----------- | -------------------- | -------------------- |
 | Unsubmitted | retained | retained |
 | UNKNOWN / SUBMITTING | retained (full) | retained (full) |
+| Proven NOT_SUBMITTED | released | released |
 | Partial fill | resized to remaining notional | resized to remaining qty |
 | Full fill / reject / cancel | released | released |
 

@@ -23,6 +23,7 @@ def sync_proposal_reservations(
     """Resize or release reservations from proven fills/terminal state.
 
     UNKNOWN and SUBMITTING retain capacity. A timeout is not a release.
+    Proven NOT_SUBMITTED is terminal and may release.
     """
     orders = store.list_execution_orders(conn=conn, proposal_id=proposal_id)
     if not orders:

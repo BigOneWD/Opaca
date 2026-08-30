@@ -49,6 +49,7 @@ class PaperWorld:
         timeout_before_accept: bool = False,
         timeout_after_accept: bool = False,
         reject_reason: str | None = None,
+        reject_on_call: int | None = None,
         fill_on_submit: bool = True,
         partial_fill_qty: Decimal | None = None,
     ) -> FakePaperExecutionGateway:
@@ -61,6 +62,7 @@ class PaperWorld:
             timeout_before_accept=timeout_before_accept,
             timeout_after_accept=timeout_after_accept,
             reject_reason=reject_reason,
+            reject_on_call=reject_on_call,
             fill_on_submit=fill_on_submit,
             partial_fill_qty=partial_fill_qty,
         )
@@ -111,6 +113,16 @@ def buy_one(pid: str = "buy-1") -> Proposal:
 def sell_qty(pid: str, quantity: str) -> Proposal:
     return make_proposal(
         pid, [make_order(pid, 0, "SGOV", Side.SELL, quantity, DEFAULT_PRICES["SGOV"])]
+    )
+
+
+def sell_legs(pid: str, quantities: tuple[str, ...]) -> Proposal:
+    return make_proposal(
+        pid,
+        [
+            make_order(pid, index, "SGOV", Side.SELL, quantity, DEFAULT_PRICES["SGOV"])
+            for index, quantity in enumerate(quantities)
+        ],
     )
 
 

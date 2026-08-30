@@ -33,7 +33,11 @@ from opaca.domain.models import (
     Side,
 )
 from opaca.domain.money import ZERO, non_negative_money, round_budget
-from opaca.execution.errors import DuplicateSubmissionError, ExecutionBlockedError
+from opaca.execution.errors import (
+    DuplicateSubmissionError,
+    ExecutionBlockedError,
+    ExecutionInvariantError,
+)
 from opaca.execution.gateway import (
     DuplicateClientOrderIdError,
     PaperMutatingGateway,
@@ -160,8 +164,11 @@ def execute_reserved_proposal(
     if intent_error is not None:
         return _blocked_result(proposal, intent_error, recon.snapshot.version)
 
+    if not proposal.legs:
+        raise ExecutionInvariantError("proposal has no legs")
     last: ExecutionOrderRecord | None = None
     submitted = False
+    attempted: list[str] = []
     for leg in proposal.legs:
         last = _submit_leg(
             store,
@@ -172,25 +179,37 @@ def execute_reserved_proposal(
             now=now,
             calendar=calendar,
         )
-        submitted = True
+        attempted.append(leg.client_order_id)
+        if last.state is not ExecutionState.NOT_SUBMITTED:
+            submitted = True
         if last.state in {
             ExecutionState.UNKNOWN_REQUIRES_RECONCILIATION,
             ExecutionState.REJECTED,
+            ExecutionState.NOT_SUBMITTED,
         }:
             break
         last = _sync_leg_from_broker(
             store, read_gateway, last.client_order_id, now=now, calendar=calendar
         )
-    assert last is not None
+    if last is None:
+        raise ExecutionInvariantError("no execution order produced")
+    _abort_unsent_legs(
+        store,
+        proposal.proposal_id,
+        attempted_client_order_ids=frozenset(attempted),
+        now=now,
+        reason=_unsent_abort_reason(last),
+    )
     active = _has_active_capacity(store, proposal.proposal_id)
+    blocked = last.state is ExecutionState.NOT_SUBMITTED and not submitted
     return ExecutionResult(
         proposal_id=proposal.proposal_id,
         client_order_ids=tuple(leg.client_order_id for leg in proposal.legs),
         state=last.state,
         filled_quantity=last.filled_quantity,
         remaining_quantity=last.remaining_quantity,
-        blocked=False,
-        block_reason=None,
+        blocked=blocked,
+        block_reason=("kill switch active immediately before submit" if blocked else None),
         recovered=False,
         submitted=submitted,
         snapshot_version=recon.snapshot.version,
@@ -439,6 +458,10 @@ def _persist_submission_intents(
                     store, conn, proposal.proposal_id, now, reason, snapshot.version
                 )
                 return reason
+        if store.kill_switch_active(conn=conn):
+            reason = "kill switch active"
+            _audit_blocked_conn(store, conn, proposal.proposal_id, now, reason, snapshot.version)
+            return reason
         reservations = [
             item
             for item in store.active_reservations(conn=conn)
@@ -506,6 +529,13 @@ def _submit_leg(
         quantity=leg.quantity,
         client_order_id=leg.client_order_id,
     )
+    if store.kill_switch_active():
+        return _mark_not_submitted(
+            store,
+            leg.client_order_id,
+            now=now,
+            reason="kill switch active immediately before submit",
+        )
     try:
         payload = mutate_gateway.submit_order(request)
     except DuplicateClientOrderIdError:
@@ -907,6 +937,90 @@ def _has_active_capacity(store: SQLiteStore, proposal_id: str) -> bool:
         and item.kind in {ReservationKind.SELL_QUANTITY, ReservationKind.CASH_DEPLOYMENT}
         for item in store.active_reservations()
     )
+
+
+def _unsent_abort_reason(last: ExecutionOrderRecord) -> str:
+    if last.state is ExecutionState.REJECTED:
+        return f"upstream leg {last.client_order_id} rejected by broker"
+    if last.state is ExecutionState.UNKNOWN_REQUIRES_RECONCILIATION:
+        return f"upstream leg {last.client_order_id} unknown; later legs never submitted"
+    if last.state is ExecutionState.NOT_SUBMITTED:
+        return f"upstream leg {last.client_order_id} not submitted"
+    return f"upstream leg {last.client_order_id} stopped execution"
+
+
+def _mark_not_submitted(
+    store: SQLiteStore,
+    client_order_id: str,
+    *,
+    now: datetime,
+    reason: str,
+) -> ExecutionOrderRecord:
+    with store.begin_immediate() as conn:
+        current = store.get_execution_order(client_order_id, conn=conn)
+        if current is None:
+            raise PersistenceError("submission intent missing")
+        if current.state is ExecutionState.NOT_SUBMITTED:
+            return current
+        if current.state is not ExecutionState.SUBMITTING or current.broker_order_id is not None:
+            raise ExecutionInvariantError(
+                f"{client_order_id} cannot be marked NOT_SUBMITTED from {current.state.value}"
+            )
+        validate_transition(current.state, ExecutionState.NOT_SUBMITTED)
+        updated = replace(current, state=ExecutionState.NOT_SUBMITTED, updated_at=now)
+        store.update_execution_order(updated, conn=conn)
+        store.record_audit(
+            AuditEventType.ORDER_NOT_SUBMITTED,
+            now,
+            proposal_id=updated.proposal_id,
+            reason=reason,
+            broker_identifiers=client_order_id,
+            conn=conn,
+        )
+        store.record_audit(
+            AuditEventType.EXECUTION_BLOCKED,
+            now,
+            proposal_id=updated.proposal_id,
+            reason=reason,
+            broker_identifiers=client_order_id,
+            conn=conn,
+        )
+        sync_proposal_reservations(store, conn, proposal_id=updated.proposal_id, now=now)
+        return updated
+
+
+def _abort_unsent_legs(
+    store: SQLiteStore,
+    proposal_id: str,
+    *,
+    attempted_client_order_ids: frozenset[str],
+    now: datetime,
+    reason: str,
+) -> None:
+    with store.begin_immediate() as conn:
+        orders = store.list_execution_orders(conn=conn, proposal_id=proposal_id)
+        changed = False
+        for item in orders:
+            if item.client_order_id in attempted_client_order_ids:
+                continue
+            if item.state is ExecutionState.NOT_SUBMITTED:
+                continue
+            if item.state is not ExecutionState.SUBMITTING or item.broker_order_id is not None:
+                continue
+            validate_transition(item.state, ExecutionState.NOT_SUBMITTED)
+            updated = replace(item, state=ExecutionState.NOT_SUBMITTED, updated_at=now)
+            store.update_execution_order(updated, conn=conn)
+            store.record_audit(
+                AuditEventType.ORDER_NOT_SUBMITTED,
+                now,
+                proposal_id=proposal_id,
+                reason=reason,
+                broker_identifiers=item.client_order_id,
+                conn=conn,
+            )
+            changed = True
+        if changed:
+            sync_proposal_reservations(store, conn, proposal_id=proposal_id, now=now)
 
 
 def _audit_blocked(

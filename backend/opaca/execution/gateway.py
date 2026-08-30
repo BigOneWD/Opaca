@@ -94,6 +94,7 @@ class FakePaperExecutionGateway:
     timeout_before_accept: bool = False
     timeout_after_accept: bool = False
     reject_reason: str | None = None
+    reject_on_call: int | None = None
     fill_on_submit: bool = True
     partial_fill_qty: Decimal | None = None
     next_broker_id: int = 1
@@ -108,7 +109,9 @@ class FakePaperExecutionGateway:
             raise BrokerUnavailableError("network timeout before broker accept")
         if request.client_order_id in self.orders:
             raise DuplicateClientOrderIdError(request.client_order_id)
-        if self.reject_reason is not None:
+        if self.reject_reason is not None or (
+            self.reject_on_call is not None and self.submit_calls == self.reject_on_call
+        ):
             payload = self._payload(
                 request,
                 status="rejected",
