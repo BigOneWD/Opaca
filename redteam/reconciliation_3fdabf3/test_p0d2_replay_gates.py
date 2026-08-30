@@ -150,16 +150,21 @@ def test_a_blocked_replay_still_reports_the_stored_authority_result(tmp_path):
     store.close()
 
 
-def test_a_clean_replay_is_still_auto_and_capacity_neutral(tmp_path):
-    """The gates must not break idempotency itself."""
+def test_a_clean_replay_is_idempotent_and_never_currently_auto(tmp_path):
+    """The gates must not break idempotency itself — and, from 624439f, a clean
+    replay must not assert current execution eligibility either. Historical AUTO
+    is preserved as metadata; ``is_auto`` is not."""
     store, v1 = reconciled_store(tmp_path, qty="100")
     proposal, _ = _auto(store, v1)
     before = (len(store.load_autonomous_history()), store.count_reservations("live"))
     for _ in range(3):
         replay = _replay(store, proposal, v1)
-        assert replay.is_auto is True
         assert replay.idempotent_replay is True
-        assert replay.blocked is False
+        assert replay.blocked is False, "an unchanged replay is not an error"
+        assert replay.block_reason is None
+        assert replay.authority_result is AuthorityResult.AUTO, "history is preserved"
+        assert replay.reserved is True, "the existing reservation is still reported"
+        assert replay.is_auto is False, "REPLAYED AUTO != CURRENTLY EXECUTABLE AUTO"
     assert (len(store.load_autonomous_history()), store.count_reservations("live")) == before
     store.close()
 
@@ -219,18 +224,19 @@ def test_every_gate_denies_a_replay_of_an_approval_required_proposal_too(tmp_pat
     store.close()
 
 
-def test_FINDING_replay_is_not_re_evaluated_against_the_newer_snapshot(tmp_path):
-    """The gates check that the snapshot is current, reconciled and fresh — they do
-    not re-run TreasuryGuard. A proposal that was AUTO at v1 still reports
-    is_auto=True at a valid, fresh, RECONCILED v2 under which an identical fresh
-    proposal is a hard REJECT, and it reports the stale v1 as its snapshot_version.
-    """
+def test_replay_never_outlives_the_state_it_was_decided_against(tmp_path):
+    """CLOSED at 624439f (was P0-1-r). At d85a2e6 a proposal that was AUTO at v1
+    still reported ``is_auto=True`` at a valid, fresh, RECONCILED v2 under which an
+    identical fresh proposal was a hard REJECT. Replay no longer asserts current
+    eligibility at all, so replay and a fresh sibling can never disagree."""
     store, v1 = reconciled_store(tmp_path, qty=None, cash="100000")
     proposal = make_proposal("b", [make_order("b", 0, "SGOV", Side.BUY, "99", SGOV)])
     first = evaluate_and_reserve(
-        store, proposal, now=DEFAULT_NOW, prices=DEFAULT_PRICES, expected_snapshot_version=v1
+        store, proposal, now=DEFAULT_NOW, prices=DEFAULT_PRICES,
+        expected_snapshot_version=v1,
     )
-    assert first.is_auto
+    assert first.is_auto is True
+    assert first.idempotent_replay is False
 
     recon = reconcile(store, paper_gateway(cash="1"), now=DEFAULT_NOW)
     assert recon.status is ReconciliationStatus.RECONCILED
@@ -238,18 +244,17 @@ def test_FINDING_replay_is_not_re_evaluated_against_the_newer_snapshot(tmp_path)
 
     identical = make_proposal("c", [make_order("c", 0, "SGOV", Side.BUY, "99", SGOV)])
     fresh = evaluate_and_reserve(
-        store, identical, now=DEFAULT_NOW, prices=DEFAULT_PRICES, expected_snapshot_version=v2
+        store, identical, now=DEFAULT_NOW, prices=DEFAULT_PRICES,
+        expected_snapshot_version=v2,
     )
-    assert fresh.authority_result is AuthorityResult.REJECT, "probe assumption"
+    assert fresh.authority_result is AuthorityResult.REJECT
 
     replay = _replay(store, proposal, v2)
-    store.close()
-    assert replay.is_auto is True, "probe assumption"
-    assert replay.snapshot_version == v1
-    pytest.fail(
-        "FINDING P0-1-r (residual): replay reports is_auto=True at snapshot v"
-        f"{v2} while an identical fresh proposal is REJECT there; the replay carries "
-        f"snapshot_version={v1}. The gates check snapshot currency, not the decision. "
-        "Compensating control: the module contract requires a fresh reconciliation and "
-        "a fresh TreasuryGuard run before any submission."
+    assert replay.is_auto is False
+    assert replay.is_auto == fresh.is_auto, (
+        "replay and a fresh identical proposal must agree about current eligibility"
     )
+    assert replay.idempotent_replay is True
+    assert replay.authority_result is AuthorityResult.AUTO, "the historical result survives"
+    assert replay.reserved is True, "the historical reservation survives"
+    store.close()

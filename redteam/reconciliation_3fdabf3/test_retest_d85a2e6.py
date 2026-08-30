@@ -181,9 +181,9 @@ class TestP01ReplaySafety:
         ) == Decimal("10")
         store.close()
 
-    def test_clean_replay_still_reports_auto_and_adds_no_capacity(self, tmp_path):
-        """The fix must not break idempotency: a replay under current, matching,
-        fresh, reconciled state is still AUTO and still capacity-neutral."""
+    def test_clean_replay_is_capacity_neutral_and_not_currently_auto(self, tmp_path):
+        """The gates must not break idempotency. From 624439f a clean replay also
+        stops asserting current eligibility — see test_retest_624439f.py."""
         store, v = reconciled_store(tmp_path, qty="100")
         proposal, first = _auto(store, v)
         before = (len(store.load_autonomous_history()), store.count_reservations("live"))
@@ -192,8 +192,11 @@ class TestP01ReplaySafety:
                 store, proposal, now=DEFAULT_NOW, prices=DEFAULT_PRICES,
                 expected_snapshot_version=v,
             )
-            assert replay.is_auto is True
             assert replay.idempotent_replay is True
+            assert replay.blocked is False
+            assert replay.authority_result is AuthorityResult.AUTO
+            assert replay.reserved is True
+            assert replay.is_auto is False
         assert (len(store.load_autonomous_history()), store.count_reservations("live")) == before
         store.close()
 

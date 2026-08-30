@@ -192,3 +192,33 @@ against a newer snapshot; P1-1-r bound read methods still expose their owner),
 and seven P2 observations carry over unchanged.
 
 Full report: `claude/reconciliation-state-retest-d85a2e6.md`.
+
+### Final closeout retest @ 624439f
+
+Target: `origin/feat/reconciliation-state @ 624439fbba9a2f70110e4c413a7783eda564418a`
+(`fix: separate replay history from execution eligibility`).
+
+    git worktree add --detach /tmp/rc 624439fbba9a2f70110e4c413a7783eda564418a
+    OPACA_BACKEND=/tmp/rc/backend pytest -q redteam/reconciliation_3fdabf3
+    #   -> 409 passed, 8 failed
+    OPACA_BACKEND=/tmp/rc/backend pytest -q redteam/
+    #   -> 623 passed, 8 failed   (214 treasury-core still green)
+
+**409 passed / 8 findings.** Verdict: **PASS**, merge recommended.
+
+The last remaining fail-open, P0-1-r, is closed: `OrchestrationResult.is_auto`
+returns False whenever `idempotent_replay` is True, so a replayed proposal never
+asserts current execution eligibility. Replay still preserves the historical
+authority result and reservation rows and still consumes no new capacity.
+
+`test_retest_624439f.py` adds 36 tests across the six enumerated retest cases;
+15 tests fail at `d85a2e6` and pass here. Two tests that encoded the old replay
+contract (`replay.is_auto is True`) were retargeted to the new one and now
+assert more than they did before — idempotency, capacity neutrality, preserved
+history *and* the absence of current eligibility. No unrelated adversarial test
+was touched.
+
+Remaining: one P3 (`__self__` introspection escape) and seven P2 observations,
+all fail-closed and all now recorded by the builder in `docs/backlog.md`.
+
+Full report: `claude/reconciliation-state-closeout-624439f.md`.
