@@ -128,8 +128,31 @@ def _verify_paper_endpoint(gateway: object) -> str:
     return require_paper_endpoint(endpoint)
 
 
+def _enum_like_token(value: object) -> str | None:
+    """Return an exact uppercase token from a string or enum-like object.
+
+    Accepts a plain string, ``object.value`` when it is a non-empty string, or
+    ``object.name`` when value is not a usable string. Does not parse
+    ``str(value)``, so the string ``"AccountStatus.ACTIVE"`` is not ACTIVE.
+    """
+    if isinstance(value, str):
+        token = value.strip().upper()
+        return token or None
+    raw = getattr(value, "value", None)
+    if isinstance(raw, str):
+        token = raw.strip().upper()
+        if token:
+            return token
+    name = getattr(value, "name", None)
+    if isinstance(name, str):
+        token = name.strip().upper()
+        if token:
+            return token
+    return None
+
+
 def _account_status(account: Mapping[str, object]) -> tuple[str, Decimal | None]:
-    status = str(account.get("status", "")).upper()
+    status = _enum_like_token(account.get("status"))
     paper_account = "ACTIVE" if status == "ACTIVE" else "FAIL"
     cash: Decimal | None
     try:
