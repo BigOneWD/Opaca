@@ -728,8 +728,26 @@ class TestRequestIdentity:
                 side=Side.BUY,
                 quantity=Decimal("1"),
                 client_order_id=deterministic_client_order_id("x", 0),
+                order_type="stop",
+            )
+        with pytest.raises(ValueError):
+            PaperOrderRequest(
+                symbol="SGOV",
+                side=Side.BUY,
+                quantity=Decimal("1"),
+                client_order_id=deterministic_client_order_id("x", 0),
                 order_type="limit",
             )
+        bounded = PaperOrderRequest(
+            symbol="SGOV",
+            side=Side.BUY,
+            quantity=Decimal("1"),
+            client_order_id=deterministic_client_order_id("x", 0),
+            order_type="limit",
+            limit_price=Decimal("100.80"),
+        )
+        assert bounded.order_type == "limit"
+        assert bounded.limit_price == Decimal("100.80")
 
 
 class TestUnknownCancel:

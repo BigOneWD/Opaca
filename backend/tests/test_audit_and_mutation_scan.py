@@ -79,7 +79,7 @@ class TestAudit:
         assert reserved
         reject = make_proposal(
             "blocked-buy",
-            [make_order("blocked-buy", 0, "SGOV", Side.BUY, "3972", "100.70")],
+            [make_order("blocked-buy", 0, "SGOV", Side.BUY, "3972", DEFAULT_PRICES["SGOV"])],
         )
         prices = {
             "SGOV": DEFAULT_PRICES["SGOV"],

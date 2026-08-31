@@ -51,6 +51,9 @@ from opaca.execution.states import (
     map_broker_status,
     validate_transition,
 )
+from opaca.market.binding import BoundExecutionPrice, price_binding_failure
+from opaca.market.errors import MarketDataError
+from opaca.market.quote import validate_canonical_quote
 from opaca.orchestration.context import build_policy_context
 from opaca.orchestration.reserve import proposal_hash
 from opaca.persistence.store import PersistenceError, SQLiteStore
@@ -121,6 +124,7 @@ def execute_reserved_proposal(
     prices: Mapping[str, Decimal],
     calendar: TradingCalendar = US_TRADING_CALENDAR,
     environment_verified: bool = True,
+    price_bindings: Mapping[str, BoundExecutionPrice] | None = None,
 ) -> ExecutionResult:
     """Fresh recon + TreasuryGuard + authority, then at most one submit per leg."""
     assert_read_only_gateway(read_gateway)
@@ -152,6 +156,7 @@ def execute_reserved_proposal(
             calendar=calendar,
             environment_verified=environment_verified,
             expected_snapshot_version=recon.snapshot.version,
+            price_bindings=price_bindings,
         )
     except DuplicateSubmissionError:
         return recover_proposal(
@@ -365,6 +370,7 @@ def _persist_submission_intents(
     calendar: TradingCalendar,
     environment_verified: bool,
     expected_snapshot_version: int,
+    price_bindings: Mapping[str, BoundExecutionPrice] | None = None,
 ) -> str | None:
     digest = proposal_hash(proposal)
     with store.begin_immediate() as conn:
@@ -421,6 +427,22 @@ def _persist_submission_intents(
             reason = "kill switch active"
             _audit_blocked_conn(store, conn, proposal.proposal_id, now, reason, snapshot.version)
             return reason
+        if price_bindings is not None:
+            try:
+                for bound in price_bindings.values():
+                    validate_canonical_quote(bound.quote, now=now)
+            except MarketDataError as exc:
+                reason = str(exc)
+                _audit_blocked_conn(
+                    store, conn, proposal.proposal_id, now, reason, snapshot.version
+                )
+                return reason
+        bind_reason = price_binding_failure(proposal, prices, bindings=price_bindings)
+        if bind_reason is not None:
+            _audit_blocked_conn(
+                store, conn, proposal.proposal_id, now, bind_reason, snapshot.version
+            )
+            return bind_reason
         context, snapshot = build_policy_context(
             store,
             now=now,
@@ -528,6 +550,9 @@ def _submit_leg(
         side=leg.side,
         quantity=leg.quantity,
         client_order_id=leg.client_order_id,
+        time_in_force="day",
+        order_type="limit",
+        limit_price=leg.reference_price,
     )
     if store.kill_switch_active():
         return _mark_not_submitted(

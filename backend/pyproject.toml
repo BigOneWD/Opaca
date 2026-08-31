@@ -13,6 +13,7 @@ testpaths = ["tests"]
 addopts = "-q"
 markers = [
   "live_paper: optional live PAPER read-only smoke (requires credentials)",
+  "live_paper_preflight: optional live PAPER read-only preflight (requires credentials)",
   "live_paper_mutation: optional live PAPER mutating smoke (requires credentials + opt-in)",
 ]
 

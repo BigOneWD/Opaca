@@ -65,5 +65,6 @@ path for existing files is not in this phase.
 
 ## Synthetic live-test pricing
 
-Live paper mutation smoke uses a fixed 1-share SGOV path. Synthetic
-live-test pricing for broader symbols is not in this phase.
+Closed for the live-paper path: SGOV/BIL/SHV prices come from Alpaca latest
+trade with canonical binding. Offline tests may still use
+`tests.helpers.DEFAULT_PRICES`.

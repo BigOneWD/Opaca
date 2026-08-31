@@ -68,7 +68,7 @@ that cannot cover recorded unsettled proceeds.
 * `isolation_level=None` with explicit `BEGIN IMMEDIATE` / `COMMIT` / `ROLLBACK`
 * Decimal values stored as exact decimal strings
 * timestamps stored as timezone-aware ISO-8601 UTC
-* schema version 1; mismatch fails closed
+* schema version 2; mismatch fails closed
 
 `evaluate_and_reserve` is one writer transaction:
 

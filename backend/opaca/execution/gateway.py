@@ -14,7 +14,7 @@ from opaca.broker.errors import (
 from opaca.broker.gateway import LIVE_ENDPOINT, PAPER_ENDPOINT, BrokerPayload
 from opaca.broker.mutation import FORBIDDEN_BROKER_MUTATIONS, nested_mutable_client_method
 from opaca.domain.models import Side
-from opaca.domain.money import ZERO, non_negative_money, round_quantity
+from opaca.domain.money import ZERO, non_negative_money, positive_money, round_quantity
 from opaca.policy.client_order_id import is_valid_client_order_id
 
 ALLOWED_EXECUTION_METHODS: frozenset[str] = frozenset({"submit_order", "cancel_order_by_id"})
@@ -28,14 +28,22 @@ class PaperOrderRequest:
     client_order_id: str
     time_in_force: str = "day"
     order_type: str = "market"
+    limit_price: Decimal | None = None
 
     def __post_init__(self) -> None:
         if not self.symbol:
             raise ValueError("symbol must be non-empty")
         if self.time_in_force != "day":
             raise ValueError("only DAY time_in_force is permitted")
-        if self.order_type != "market":
-            raise ValueError("only market orders are permitted")
+        if self.order_type == "market":
+            if self.limit_price is not None:
+                raise ValueError("market orders cannot include limit_price")
+        elif self.order_type == "limit":
+            if self.limit_price is None:
+                raise ValueError("limit orders require limit_price")
+            object.__setattr__(self, "limit_price", positive_money(self.limit_price))
+        else:
+            raise ValueError("only market or limit DAY orders are permitted")
         if not is_valid_client_order_id(self.client_order_id):
             raise ValueError("client_order_id violates Alpaca constraints")
         object.__setattr__(self, "quantity", round_quantity(self.quantity))
@@ -176,7 +184,7 @@ class FakePaperExecutionGateway:
         broker_id: str,
     ) -> dict[str, object]:
         price = self.fill_price if self.fill_price is not None else Decimal("100.69")
-        return {
+        payload: dict[str, object] = {
             "id": broker_id,
             "client_order_id": request.client_order_id,
             "symbol": request.symbol,
@@ -185,7 +193,12 @@ class FakePaperExecutionGateway:
             "qty": format(request.quantity, "f"),
             "filled_qty": format(filled, "f"),
             "filled_avg_price": format(price, "f") if filled > ZERO else None,
+            "order_type": request.order_type,
+            "type": request.order_type,
         }
+        if request.limit_price is not None:
+            payload["limit_price"] = format(request.limit_price, "f")
+        return payload
 
     def _apply_fill_to_linked(
         self, request: PaperOrderRequest, filled: Decimal, status: str

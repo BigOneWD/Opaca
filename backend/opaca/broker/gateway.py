@@ -65,6 +65,7 @@ class FakeAlpacaGateway:
     """Deterministic offline double. Never talks to Alpaca."""
 
     account: BrokerPayload
+    endpoint: str = PAPER_ENDPOINT
     positions: tuple[BrokerPayload, ...] = ()
     assets: Mapping[str, BrokerPayload] = field(default_factory=dict)
     open_orders: tuple[BrokerPayload, ...] = ()

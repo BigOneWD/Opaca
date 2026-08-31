@@ -18,6 +18,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="run optional live PAPER read-only smoke tests",
     )
     parser.addoption(
+        "--live-paper-preflight",
+        action="store_true",
+        default=False,
+        help="run optional live PAPER read-only preflight (never mutates)",
+    )
+    parser.addoption(
         "--live-paper-mutation",
         action="store_true",
         default=False,
@@ -31,6 +37,10 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     config.addinivalue_line(
         "markers",
+        "live_paper_preflight: optional live PAPER read-only preflight (requires credentials)",
+    )
+    config.addinivalue_line(
+        "markers",
         "live_paper_mutation: optional live PAPER mutating smoke (requires credentials + opt-in)",
     )
 
@@ -39,8 +49,17 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     if not config.getoption("--live-paper"):
         skip = pytest.mark.skip(reason="live paper smoke not requested")
         for item in items:
-            if "live_paper" in item.keywords and "live_paper_mutation" not in item.keywords:
+            if (
+                "live_paper" in item.keywords
+                and "live_paper_mutation" not in item.keywords
+                and "live_paper_preflight" not in item.keywords
+            ):
                 item.add_marker(skip)
+    if not config.getoption("--live-paper-preflight"):
+        skip_pre = pytest.mark.skip(reason="live paper preflight not requested")
+        for item in items:
+            if "live_paper_preflight" in item.keywords:
+                item.add_marker(skip_pre)
     if config.getoption("--live-paper-mutation"):
         return
     skip_mut = pytest.mark.skip(reason="live paper mutation not requested")
