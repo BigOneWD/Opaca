@@ -1,6 +1,6 @@
 # Opaca — red-team suite
 
-Four phases of adversarial review live here:
+Five rounds of adversarial review live here:
 
 * `redteam/*.py` + `closeout_bc5fcda/` — **Treasury Core** (`feat/treasury-core`)
 * `reconciliation_3fdabf3/` — **Phase 2 reconciliation state + SQLite atomic
@@ -9,6 +9,8 @@ Four phases of adversarial review live here:
   (`feat/paper-execution`)
 * `prelive_11d1cde/` — **Pre-live readiness: bounded live-paper pricing and
   read-only preflight** (`feat/prelive-readiness`)
+* `closeout_193d7a2/` — **Final pre-live closeout: the last four blockers**
+  (`feat/prelive-readiness`)
 
 Each subdirectory carries its own README, and every suite runs against a
 checkout of the commit it reviews, never against this branch.
@@ -355,3 +357,98 @@ market-data client, the live smoke no longer prices from `DEFAULT_PRICES`, and a
 understated `reference_price` no longer flips the authority decision to AUTO.
 
 Full report: `claude/prelive-readiness-redteam-11d1cde.md`.
+---
+
+## Final pre-live closeout — the last four blockers @ 193d7a2
+
+Target: `origin/feat/prelive-readiness @ 193d7a21cc956d2688f69e339cb79fc44cd34380`
+(`fix: close final pre-live execution blockers`), whose **direct parent** is the
+previously reviewed `11d1cde` — the retest diff is a single commit: 18 files,
++901/-92, of which 6 are production modules.
+
+    git worktree add --detach /tmp/cl 193d7a21cc956d2688f69e339cb79fc44cd34380
+    OPACA_BACKEND=/tmp/cl/backend pytest -q redteam/closeout_193d7a2
+    #   -> 312 passed          (~18 s: test_r1 injects 16 s of real elapsed time)
+    OPACA_BACKEND=/tmp/cl/backend pytest -q redteam/
+    #   -> 1160 passed, 88 failed
+
+**312 collected / 312 passed / 0 findings.** Verdict: **PASS**, **MERGE**
+recommended. First paper trade: **READY FOR HUMAN PREFLIGHT**.
+
+Reviewed **offline only** — no credentials requested, no live call, and **no
+broker mutation of any kind**, including against the paper endpoint. Nothing was
+merged and no production code was modified: all 116 tracked blobs of the target
+tree hash-match `git ls-tree 193d7a21` at the end of the session.
+
+All four named blockers are **CLOSED**, each proven by probes that fail at the
+parent commit `11d1cde` (14/14, 13/14, a whole file that will not import, 5/5
+and 11/14 respectively):
+
+| blocker | verdict | evidence |
+| --- | --- | --- |
+| **P1-1** quote freshness at the final mutation boundary | **CLOSED** | `_submit_leg` reads a real `datetime.now(UTC)` and revalidates the bound quote immediately before `submit_order`, kill switch on both sides. 14.999 s allowed; **15.000 s allowed** (the documented inclusive maximum); 15 s + 1 µs, 16 s and a future quote all 0 submits; a genuine `time.sleep(16.0)` in the pre-submit window gives 0 submits where the same setup without it submits once. Every failure is `NOT_SUBMITTED`, never `UNKNOWN`. |
+| **P1-2** mandatory canonical binding | **CLOSED** | Driven through the **real** `AlpacaPaperExecutionGateway`: `None`, `{}`, incomplete, wrong symbol, wrong quantity, mismatched quote and the invented matched `$0.01` pair (BUY 100,000 and the marketable SELL) all give **0 submits and zero execution rows**; a valid binding proceeds as a DAY LIMIT at 100.80. |
+| **P2-1** exact paper endpoint | **CLOSED** | 53 hostile URL forms × 5 production guards, all rejected; zero `startswith` endpoint tests remain anywhere in the 49 production modules. |
+| **P2-2** market adapter test gate | **CLOSED** | `pytz==2025.2` pinned in `requirements-dev.txt` and the `paper` extra; zero `importorskip` in `tests/`; without `pytz` the 5 market-adapter tests now **fail** where at `11d1cde` they silently skipped. |
+
+**UNBOUND RESERVATION CAN REACH REAL SUBMIT: NO.** `evaluate_and_reserve` still
+supports the offline/unbound mode and still returns `is_auto=True` for an honest
+unbound proposal *and* for the invented `$0.01` pair — permitted by the brief
+only because every real mutating path independently requires a complete
+canonical binding, which is measured: 0 submits against the real gateway on
+first call and on replay, and the same refusal on the offline gateway.
+Structurally, `submit_order` has one call site, `_submit_leg` has one caller, and
+that call passes `price_bindings`.
+
+Builder gates at the target: 447 collected / 444 passed / 3 skipped (the three
+live opt-ins only, +40 tests vs `11d1cde` with none removed), `ruff check` clean,
+`ruff format --check` clean on 87 files, `mypy --strict` clean on 87 files,
+`git diff --check` exit 0, 0 bare `assert` across 49 production modules, green
+under `python -O` and `-OO`, a credential scan with 0 literals, and a mutation
+capability scan showing two call sites, both on `mutate_gateway`.
+
+### Reading the 88 failures in a verbatim whole-tree run
+
+**70 of them are the new mandatory-binding call contract, not regressions.**
+Suites written before this commit call `execute_reserved_proposal` with no
+bindings and a frozen `now`, so they block before the broker and can no longer
+observe what they were written to attack.
+`closeout_193d7a2/contract_adapter.py` supplies **only** that missing
+precondition — a canonical binding derived from the `prices` each test already
+passes, and a boundary clock pinned to the test's own `now`. Applied to a copy
+of the tree (never in place), the result is:
+
+    cp -r <repo> /tmp/adapted
+    cat redteam/closeout_193d7a2/contract_adapter.py >> /tmp/adapted/redteam/conftest.py
+    cd /tmp/adapted
+    OPACA_BACKEND=/tmp/cl/backend pytest -q redteam/ --ignore=redteam/closeout_193d7a2
+    #   -> 918 passed, 18 failed   (occasionally 19 — the intermittent P3-2 race)
+
+No assertion was touched and no adversarial check was weakened. Baseline control
+at `11d1cde` is 16 failed / 920 passed, so the only genuinely new failures are
+three intentional inversions: `test_s18_only_the_paper_endpoint_prefix_is_accepted`
+(which asserted the look-alike host *was* acceptable) and the two
+`test_s3_toctou.py` structural probes that asserted the boundary read no clock
+and ran no validation. Those two are **replaced** by semantic assertions in
+`closeout_193d7a2/test_r1_freshness_boundary.py`.
+
+The adapter cannot be used to judge P1-1 or P1-2 — it manufactures a canonical
+quote out of caller prices and pins the boundary clock, which are exactly the
+two things those blockers are about. The `closeout_193d7a2/` suite runs
+**unshimmed**; that is where both P1 verdicts come from.
+
+### Residuals
+
+No new fail-open path. Carried unchanged: P3-1, P3-2 (intermittent), P3-3 and
+the six recorded backlog markers. New non-blocking observations: `alpaca-py`
+coerces the exact decimal limit price to a binary `float` at the SDK boundary;
+`_submit_leg` revalidates the freshness of the binding present at that instant
+rather than re-running the full binding check (no economic effect); the live
+smoke still captures `now` before the quote fetch, which is no longer fatal; and
+an unbound `is_auto=True` is easy for an operator to misread as authority.
+
+The standing non-code item is unchanged: **nothing in this layer has met a real
+broker.** A human should run `python -m opaca preflight` and `pytest
+--live-paper` against real credentials before anything mutating is contemplated.
+
+Full report: `claude/prelive-final-closeout-193d7a2.md`.
