@@ -39,7 +39,9 @@ from opaca.treasury.liquidity import compute_liquidity
 from tests.execution_helpers import (
     PaperWorld,
     active_capacity,
+    bindings_for_proposal,
     buy_one,
+    freeze_submit_clock,
     make_world,
     reserve_proposal,
     sell_qty,
@@ -53,14 +55,16 @@ def _execute(
     mutate: PaperMutatingGateway,
     now: datetime = DEFAULT_NOW,
 ) -> ExecutionResult:
-    return execute_reserved_proposal(
-        world.store,
-        world.read(),
-        mutate,
-        proposal,
-        now=now,
-        prices=DEFAULT_PRICES,
-    )
+    with freeze_submit_clock(now):
+        return execute_reserved_proposal(
+            world.store,
+            world.read(),
+            mutate,
+            proposal,
+            now=now,
+            prices=DEFAULT_PRICES,
+            price_bindings=bindings_for_proposal(proposal, now=now),
+        )
 
 
 class TestGateway:
@@ -68,7 +72,7 @@ class TestGateway:
         from opaca.broker.gateway import PAPER_ENDPOINT
 
         gateway = FakePaperExecutionGateway()
-        assert gateway.endpoint.startswith(PAPER_ENDPOINT)
+        assert gateway.endpoint == PAPER_ENDPOINT
         assert_paper_execution_gateway(gateway)
         assert callable(gateway.submit_order)
         assert callable(gateway.cancel_order_by_id)
@@ -529,6 +533,7 @@ class TestApproval:
             proposal,
             now=expired,
             prices=DEFAULT_PRICES,
+            price_bindings=bindings_for_proposal(proposal, now=expired),
         )
         assert result.blocked is True
         assert mutate.submit_calls == 0
@@ -607,14 +612,16 @@ class TestSettlement:
             scenario.operating_reserve,
             friday.date(),
         )
-        result = execute_reserved_proposal(
-            world.store,
-            world.read(),
-            world.mutate(),
-            proposal,
-            now=friday,
-            prices=DEFAULT_PRICES,
-        )
+        with freeze_submit_clock(friday):
+            result = execute_reserved_proposal(
+                world.store,
+                world.read(),
+                world.mutate(),
+                proposal,
+                now=friday,
+                prices=DEFAULT_PRICES,
+                price_bindings=bindings_for_proposal(proposal, now=friday),
+            )
         assert result.state is ExecutionState.FILLED
         cash_after = Decimal(str(world.account["cash"]))
         assert cash_after > cash_before
@@ -649,14 +656,16 @@ class TestSettlement:
         world = make_world(tmp_path, qty="10", now=friday)
         proposal = sell_qty("hol-sell", "10")
         assert reserve_proposal(world, proposal, now=friday)[1].is_auto is True
-        result = execute_reserved_proposal(
-            world.store,
-            world.read(),
-            world.mutate(),
-            proposal,
-            now=friday,
-            prices=DEFAULT_PRICES,
-        )
+        with freeze_submit_clock(friday):
+            result = execute_reserved_proposal(
+                world.store,
+                world.read(),
+                world.mutate(),
+                proposal,
+                now=friday,
+                prices=DEFAULT_PRICES,
+                price_bindings=bindings_for_proposal(proposal, now=friday),
+            )
         assert result.state is ExecutionState.FILLED
         events = world.store.load_settlement_events()
         assert events[0].settlement_date == US_TRADING_CALENDAR.settlement_date(friday.date())
@@ -728,8 +737,26 @@ class TestRequestIdentity:
                 side=Side.BUY,
                 quantity=Decimal("1"),
                 client_order_id=deterministic_client_order_id("x", 0),
+                order_type="stop",
+            )
+        with pytest.raises(ValueError):
+            PaperOrderRequest(
+                symbol="SGOV",
+                side=Side.BUY,
+                quantity=Decimal("1"),
+                client_order_id=deterministic_client_order_id("x", 0),
                 order_type="limit",
             )
+        bounded = PaperOrderRequest(
+            symbol="SGOV",
+            side=Side.BUY,
+            quantity=Decimal("1"),
+            client_order_id=deterministic_client_order_id("x", 0),
+            order_type="limit",
+            limit_price=Decimal("100.80"),
+        )
+        assert bounded.order_type == "limit"
+        assert bounded.limit_price == Decimal("100.80")
 
 
 class TestUnknownCancel:

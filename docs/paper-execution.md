@@ -68,12 +68,45 @@ submit attempt remains UNKNOWN.
 
 A network timeout is not a release.
 
-## T+1 settlement
+## Canonical market price
 
-Paper may credit cash immediately. Opaca records `SettlementEvent` on sell
-fills and subtracts unsettled proceeds from broker cash. Proceeds become
-usable on the derived T+1 business day (weekends and NYSE holidays skipped).
-`buying_power` is never funding.
+The live-paper path reads Alpaca IEX **latest trade** for SGOV, BIL, and SHV
+(`opaca.market`). Credentials stay in the environment. The data client is
+separate from the mutating gateway. Missing, non-positive, non-finite, future,
+or stale quotes fail closed. There is no fallback to
+`tests.helpers.DEFAULT_PRICES` or any synthetic price.
+
+Default freshness: quote source timestamp must be ≤ **15 seconds** old
+(`DEFAULT_MAX_QUOTE_AGE_SECONDS`). Override per call; never silently extend.
+
+`PolicyContext.prices[symbol]` and `leg.reference_price` are bound to one
+`CanonicalMarketPrice`. A caller cannot inject TreasuryGuard `100` and
+execution `reference_price=0.01`. Mismatch fails closed and cannot reach
+executable AUTO.
+
+## Bounded BUY LIMIT
+
+Paper execution submits **DAY LIMIT** orders. A BUY limit is
+
+```text
+limit = round_up_cents(canonical × (1 + tolerance))
+max cash = round_budget(qty × limit)
+```
+
+Default `tolerance` is **10 basis points** (`0.001`,
+`DEFAULT_BUY_LIMIT_TOLERANCE`). It is an explicit configured argument, not a
+hidden constant. TreasuryGuard evaluates BUY notional at that LIMIT (maximum
+cash obligation). The broker order uses the same LIMIT. `buying_power` is
+never funding. No hidden leverage.
+
+## SELL price handling
+
+SELL policy valuation and expected proceeds use the **canonical print** with
+no premium. A SELL LIMIT is that same print (fill at limit or better is not
+modeled as extra cash). Paper may credit immediately; Opaca still records
+`SettlementEvent` and withholds proceeds until the derived T+1 business day.
+Optimistic sell marks cannot create investable liquidity before fill and
+settlement.
 
 ## Broker / database boundary
 
@@ -82,9 +115,31 @@ process crash, submit may or may not have reached Alpaca. Recovery looks up
 the deterministic id and never mints a second order. If the broker has no
 order, the state stays UNKNOWN and requires operator review.
 
+## Fresh schema-v2 demo DB
+
+First PAPER execution uses a dedicated file such as `opaca-paper-demo.db`
+(`opaca.persistence.demo.init_paper_demo_store`). It bootstraps schema v2,
+verifies WAL + foreign keys, seeds the scenario once, and marks
+`db_role=paper-demo`. An existing file is refused unless `overwrite=True`.
+v1 files fail closed. Test DBs (`opaca.sqlite` under pytest `tmp_path`) are
+a different path and role.
+
+Reset (manual only): delete `opaca-paper-demo.db`, `-wal`, and `-shm`, then
+re-init. Nothing auto-deletes demo data.
+
+## Read-only preflight
+
+`python -m opaca preflight` (or `pytest --live-paper-preflight`) verifies the
+PAPER endpoint, ACTIVE account, cash, positions, SGOV/BIL/SHV assets, market
+price, clock/calendar, demo DB, reconciliation, a 1-share SGOV BUY proposal,
+TreasuryGuard, authority, and the bounded LIMIT — then **stops**. No
+`submit_order`, no cancel. A passing report is not execution authority.
+
 ## Live paper mutation
 
 Offline tests are the default. A live PAPER smoke (`BUY 1 SGOV`) runs only
 with explicit `--live-paper-mutation`, present credentials, verified paper
-endpoint, and a terminal warning. It is not run in this phase unless a human
-opts in.
+endpoint, and a terminal warning. It is **not** chained to preflight. Before
+submit it must re-run fresh quote, reconciliation, TreasuryGuard, authority,
+kill switch, and bounded LIMIT validation. No stale preflight result may
+authorize a later trade.

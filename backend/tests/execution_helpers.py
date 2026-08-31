@@ -2,20 +2,25 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 from opaca.broker.gateway import FakeAlpacaGateway
 from opaca.domain.models import Proposal, Side
 from opaca.execution.gateway import FakePaperExecutionGateway
+from opaca.market.binding import BoundExecutionPrice, bind_buy, bind_sell
 from opaca.orchestration.reserve import OrchestrationResult, evaluate_and_reserve
 from opaca.persistence.store import SQLiteStore
 from opaca.persistence.types import ReconciliationStatus
 from opaca.reconciliation.service import reconcile
 
 from tests.helpers import DEFAULT_NOW, DEFAULT_PRICES, make_order, make_proposal
+from tests.market_helpers import universe_quotes
 from tests.state_helpers import PHASE1_ASSETS, account_payload, position_payload, temp_store
 
 
@@ -85,6 +90,30 @@ def make_world(
     recon = reconcile(store, world.read(), now=now)
     assert recon.status is ReconciliationStatus.RECONCILED
     return world
+
+
+def bindings_for_proposal(
+    proposal: Proposal,
+    *,
+    now: datetime = DEFAULT_NOW,
+    age_seconds: int = 1,
+) -> dict[str, BoundExecutionPrice]:
+    quotes = universe_quotes(now=now, age_seconds=age_seconds)
+    bindings: dict[str, BoundExecutionPrice] = {}
+    for item in proposal.legs:
+        quote = quotes[item.symbol]
+        if item.side is Side.BUY:
+            bound = bind_buy(quote, item.quantity, tolerance=Decimal("0"))
+        else:
+            bound = bind_sell(quote, item.quantity)
+        bindings[item.symbol] = bound
+    return bindings
+
+
+@contextmanager
+def freeze_submit_clock(when: datetime) -> Iterator[None]:
+    with patch("opaca.execution.service._utc_now", return_value=when):
+        yield
 
 
 def reserve_proposal(

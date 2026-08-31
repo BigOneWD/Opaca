@@ -44,16 +44,28 @@ class AlpacaPaperExecutionGateway:
     def submit_order(self, request: PaperOrderRequest) -> BrokerPayload:
         try:
             from alpaca.trading.enums import OrderSide, TimeInForce
-            from alpaca.trading.requests import MarketOrderRequest
+            from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest
 
             side = OrderSide.BUY if request.side.value == "BUY" else OrderSide.SELL
-            order_data = MarketOrderRequest(
-                symbol=request.symbol,
-                qty=format(request.quantity, "f"),
-                side=side,
-                time_in_force=TimeInForce.DAY,
-                client_order_id=request.client_order_id,
-            )
+            if request.order_type == "limit":
+                if request.limit_price is None:
+                    raise PaperEnvironmentError("limit order missing limit_price")
+                order_data: object = LimitOrderRequest(
+                    symbol=request.symbol,
+                    qty=format(request.quantity, "f"),
+                    side=side,
+                    time_in_force=TimeInForce.DAY,
+                    limit_price=format(request.limit_price, "f"),
+                    client_order_id=request.client_order_id,
+                )
+            else:
+                order_data = MarketOrderRequest(
+                    symbol=request.symbol,
+                    qty=format(request.quantity, "f"),
+                    side=side,
+                    time_in_force=TimeInForce.DAY,
+                    client_order_id=request.client_order_id,
+                )
             raw = self._submit_order(order_data=order_data)
         except PaperEnvironmentError:
             raise

@@ -13,6 +13,9 @@ from decimal import Decimal
 from opaca.broker.errors import InvalidBrokerStateError
 from opaca.calendar.us_trading_calendar import US_TRADING_CALENDAR, TradingCalendar
 from opaca.domain.models import AuthorityDecision, AuthorityResult, Proposal
+from opaca.market.binding import BoundExecutionPrice, price_binding_failure
+from opaca.market.errors import MarketDataError
+from opaca.market.quote import validate_canonical_quote
 from opaca.orchestration.context import build_policy_context
 from opaca.persistence.store import PersistenceError, SQLiteStore, StaleSnapshotError
 from opaca.persistence.types import (
@@ -191,6 +194,7 @@ def evaluate_and_reserve(
     expected_snapshot_version: int | None = None,
     calendar: TradingCalendar = US_TRADING_CALENDAR,
     environment_verified: bool = True,
+    price_bindings: Mapping[str, BoundExecutionPrice] | None = None,
 ) -> OrchestrationResult:
     """BEGIN IMMEDIATE: load state, evaluate, reserve AUTO capacity, persist.
 
@@ -280,6 +284,44 @@ def evaluate_and_reserve(
                     idempotent_replay=False,
                 )
 
+            if price_bindings is not None:
+                try:
+                    for bound in price_bindings.values():
+                        validate_canonical_quote(bound.quote, now=now)
+                except MarketDataError as exc:
+                    reason = str(exc)
+                    store.record_audit(
+                        AuditEventType.RESERVATION_DENIED,
+                        now,
+                        proposal_id=proposal.proposal_id,
+                        snapshot_version=None if snapshot is None else snapshot.version,
+                        reason=reason,
+                        conn=conn,
+                    )
+                    return _blocked(
+                        proposal_id=proposal.proposal_id,
+                        digest=digest,
+                        reason=reason,
+                        snapshot_version=None if snapshot is None else snapshot.version,
+                        idempotent_replay=False,
+                    )
+            bind_reason = price_binding_failure(proposal, prices, bindings=price_bindings)
+            if bind_reason is not None:
+                store.record_audit(
+                    AuditEventType.RESERVATION_DENIED,
+                    now,
+                    proposal_id=proposal.proposal_id,
+                    snapshot_version=snapshot_version,
+                    reason=bind_reason,
+                    conn=conn,
+                )
+                return _blocked(
+                    proposal_id=proposal.proposal_id,
+                    digest=digest,
+                    reason=bind_reason,
+                    snapshot_version=snapshot_version,
+                    idempotent_replay=False,
+                )
             context, snapshot = build_policy_context(
                 store,
                 now=now,
@@ -485,6 +527,7 @@ def read_reconcile_evaluate_reserve(
     now: datetime,
     prices: Mapping[str, Decimal],
     calendar: TradingCalendar = US_TRADING_CALENDAR,
+    price_bindings: Mapping[str, BoundExecutionPrice] | None = None,
 ) -> tuple[object, OrchestrationResult]:
     """READ → RECONCILE → EVALUATE → RESERVE → PERSIST. No broker submit."""
     from opaca.broker.gateway import AlpacaGateway
@@ -513,5 +556,6 @@ def read_reconcile_evaluate_reserve(
         prices=prices,
         expected_snapshot_version=recon.snapshot.version,
         calendar=calendar,
+        price_bindings=price_bindings,
     )
     return recon, outcome

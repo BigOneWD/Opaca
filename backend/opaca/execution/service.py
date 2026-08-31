@@ -12,16 +12,16 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from opaca.broker.adapters import adapt_order_snapshot
 from opaca.broker.errors import BrokerUnavailableError, PaperEnvironmentError
 from opaca.broker.gateway import (
     LIVE_ENDPOINT,
-    PAPER_ENDPOINT,
     AlpacaGateway,
     assert_read_only_gateway,
+    require_paper_endpoint,
 )
 from opaca.calendar.us_trading_calendar import US_TRADING_CALENDAR, TradingCalendar
 from opaca.domain.models import (
@@ -51,6 +51,9 @@ from opaca.execution.states import (
     map_broker_status,
     validate_transition,
 )
+from opaca.market.binding import BoundExecutionPrice, price_binding_failure
+from opaca.market.errors import MarketDataError
+from opaca.market.quote import validate_canonical_quote
 from opaca.orchestration.context import build_policy_context
 from opaca.orchestration.reserve import proposal_hash
 from opaca.persistence.store import PersistenceError, SQLiteStore
@@ -68,6 +71,10 @@ from opaca.policy.decision import decide
 from opaca.reconciliation.service import reconcile
 
 _SNAPSHOT_MAX_AGE_REASON = "stale snapshot"
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 @dataclass(frozen=True)
@@ -121,6 +128,7 @@ def execute_reserved_proposal(
     prices: Mapping[str, Decimal],
     calendar: TradingCalendar = US_TRADING_CALENDAR,
     environment_verified: bool = True,
+    price_bindings: Mapping[str, BoundExecutionPrice] | None = None,
 ) -> ExecutionResult:
     """Fresh recon + TreasuryGuard + authority, then at most one submit per leg."""
     assert_read_only_gateway(read_gateway)
@@ -152,6 +160,7 @@ def execute_reserved_proposal(
             calendar=calendar,
             environment_verified=environment_verified,
             expected_snapshot_version=recon.snapshot.version,
+            price_bindings=price_bindings,
         )
     except DuplicateSubmissionError:
         return recover_proposal(
@@ -178,6 +187,7 @@ def execute_reserved_proposal(
             leg,
             now=now,
             calendar=calendar,
+            price_bindings=price_bindings,
         )
         attempted.append(leg.client_order_id)
         if last.state is not ExecutionState.NOT_SUBMITTED:
@@ -202,6 +212,13 @@ def execute_reserved_proposal(
     )
     active = _has_active_capacity(store, proposal.proposal_id)
     blocked = last.state is ExecutionState.NOT_SUBMITTED and not submitted
+    block_reason = None
+    if blocked:
+        events = store.list_audit(
+            event_type=AuditEventType.ORDER_NOT_SUBMITTED,
+            proposal_id=proposal.proposal_id,
+        )
+        block_reason = events[0].reason if events else "not submitted immediately before submit"
     return ExecutionResult(
         proposal_id=proposal.proposal_id,
         client_order_ids=tuple(leg.client_order_id for leg in proposal.legs),
@@ -209,7 +226,7 @@ def execute_reserved_proposal(
         filled_quantity=last.filled_quantity,
         remaining_quantity=last.remaining_quantity,
         blocked=blocked,
-        block_reason=("kill switch active immediately before submit" if blocked else None),
+        block_reason=block_reason,
         recovered=False,
         submitted=submitted,
         snapshot_version=recon.snapshot.version,
@@ -350,10 +367,9 @@ def cancel_remaining(
 
 def _forbid_live_endpoint(gateway: PaperMutatingGateway) -> None:
     endpoint = gateway.endpoint
-    if endpoint.startswith(LIVE_ENDPOINT):
+    if endpoint == LIVE_ENDPOINT:
         raise PaperEnvironmentError("live Alpaca endpoint is forbidden")
-    if not endpoint.startswith(PAPER_ENDPOINT):
-        raise PaperEnvironmentError("paper endpoint not confirmed")
+    require_paper_endpoint(endpoint)
 
 
 def _persist_submission_intents(
@@ -365,6 +381,7 @@ def _persist_submission_intents(
     calendar: TradingCalendar,
     environment_verified: bool,
     expected_snapshot_version: int,
+    price_bindings: Mapping[str, BoundExecutionPrice] | None = None,
 ) -> str | None:
     digest = proposal_hash(proposal)
     with store.begin_immediate() as conn:
@@ -421,6 +438,27 @@ def _persist_submission_intents(
             reason = "kill switch active"
             _audit_blocked_conn(store, conn, proposal.proposal_id, now, reason, snapshot.version)
             return reason
+        if price_bindings is None:
+            reason = "canonical price bindings are required; fail closed"
+            _audit_blocked_conn(store, conn, proposal.proposal_id, now, reason, snapshot.version)
+            return reason
+        if not price_bindings:
+            reason = "canonical price bindings are empty; fail closed"
+            _audit_blocked_conn(store, conn, proposal.proposal_id, now, reason, snapshot.version)
+            return reason
+        try:
+            for bound in price_bindings.values():
+                validate_canonical_quote(bound.quote, now=now)
+        except MarketDataError as exc:
+            reason = str(exc)
+            _audit_blocked_conn(store, conn, proposal.proposal_id, now, reason, snapshot.version)
+            return reason
+        bind_reason = price_binding_failure(proposal, prices, bindings=price_bindings)
+        if bind_reason is not None:
+            _audit_blocked_conn(
+                store, conn, proposal.proposal_id, now, bind_reason, snapshot.version
+            )
+            return bind_reason
         context, snapshot = build_policy_context(
             store,
             now=now,
@@ -522,13 +560,42 @@ def _submit_leg(
     *,
     now: datetime,
     calendar: TradingCalendar,
+    price_bindings: Mapping[str, BoundExecutionPrice] | None,
 ) -> ExecutionOrderRecord:
     request = PaperOrderRequest(
         symbol=leg.symbol,
         side=leg.side,
         quantity=leg.quantity,
         client_order_id=leg.client_order_id,
+        time_in_force="day",
+        order_type="limit",
+        limit_price=leg.reference_price,
     )
+    if store.kill_switch_active():
+        return _mark_not_submitted(
+            store,
+            leg.client_order_id,
+            now=now,
+            reason="kill switch active immediately before submit",
+        )
+    bound = None if price_bindings is None else price_bindings.get(leg.symbol)
+    if bound is None or bound.quote.symbol != leg.symbol:
+        return _mark_not_submitted(
+            store,
+            leg.client_order_id,
+            now=now,
+            reason="canonical binding missing for mutation; fail closed",
+        )
+    boundary_now = _utc_now()
+    try:
+        validate_canonical_quote(bound.quote, now=boundary_now)
+    except MarketDataError as exc:
+        return _mark_not_submitted(
+            store,
+            leg.client_order_id,
+            now=now,
+            reason=str(exc),
+        )
     if store.kill_switch_active():
         return _mark_not_submitted(
             store,

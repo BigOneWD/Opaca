@@ -35,7 +35,9 @@ from opaca.reconciliation.service import compare_state, reconcile
 from tests.execution_helpers import (
     PaperWorld,
     active_capacity,
+    bindings_for_proposal,
     buy_one,
+    freeze_submit_clock,
     make_world,
     reserve_proposal,
     sell_legs,
@@ -51,14 +53,16 @@ def _execute(
     mutate: PaperMutatingGateway,
     now: datetime = DEFAULT_NOW,
 ) -> ExecutionResult:
-    return execute_reserved_proposal(
-        world.store,
-        world.read(),
-        mutate,
-        proposal,
-        now=now,
-        prices=DEFAULT_PRICES,
-    )
+    with freeze_submit_clock(now):
+        return execute_reserved_proposal(
+            world.store,
+            world.read(),
+            mutate,
+            proposal,
+            now=now,
+            prices=DEFAULT_PRICES,
+            price_bindings=bindings_for_proposal(proposal, now=now),
+        )
 
 
 def _position(qty: str, available: str | None = None) -> Position:

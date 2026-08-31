@@ -198,6 +198,29 @@ class SQLiteStore:
             raise PersistenceError(f"missing policy {name!r} (fail closed)")
         return str(row["value"])
 
+    def system_value(self, key: str, conn: sqlite3.Connection | None = None) -> str | None:
+        target = conn if conn is not None else self._conn
+        row = target.execute("SELECT value FROM system_state WHERE key = ?", (key,)).fetchone()
+        if row is None:
+            return None
+        return str(row["value"])
+
+    def upsert_system_value(
+        self,
+        key: str,
+        value: str,
+        *,
+        now: datetime,
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
+        target = conn if conn is not None else self._conn
+        target.execute(
+            "INSERT INTO system_state(key, value, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+            "updated_at = excluded.updated_at",
+            (key, value, dump_datetime(now)),
+        )
+
     def kill_switch_active(self, conn: sqlite3.Connection | None = None) -> bool:
         target = conn if conn is not None else self._conn
         row = target.execute("SELECT value FROM system_state WHERE key = 'kill_switch'").fetchone()

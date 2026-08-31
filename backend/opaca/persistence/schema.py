@@ -1,4 +1,4 @@
-"""Deterministic SQLite schema bootstrap (WAL, foreign_keys, version 1)."""
+"""Deterministic SQLite schema bootstrap (WAL, foreign_keys, version 2)."""
 
 from __future__ import annotations
 
