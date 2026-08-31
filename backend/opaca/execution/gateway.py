@@ -11,7 +11,12 @@ from opaca.broker.errors import (
     InvalidBrokerStateError,
     PaperEnvironmentError,
 )
-from opaca.broker.gateway import LIVE_ENDPOINT, PAPER_ENDPOINT, BrokerPayload
+from opaca.broker.gateway import (
+    LIVE_ENDPOINT,
+    PAPER_ENDPOINT,
+    BrokerPayload,
+    require_paper_endpoint,
+)
 from opaca.broker.mutation import FORBIDDEN_BROKER_MUTATIONS, nested_mutable_client_method
 from opaca.domain.models import Side
 from opaca.domain.money import ZERO, non_negative_money, positive_money, round_quantity
@@ -71,12 +76,9 @@ class PaperMutatingGateway(Protocol):
 
 def assert_paper_execution_gateway(gateway: object) -> None:
     endpoint = str(getattr(gateway, "endpoint", ""))
-    if endpoint.startswith(LIVE_ENDPOINT):
+    if endpoint == LIVE_ENDPOINT:
         raise PaperEnvironmentError("live Alpaca endpoint is forbidden")
-    if not endpoint.startswith(PAPER_ENDPOINT):
-        raise PaperEnvironmentError(
-            f"paper endpoint not confirmed; expected prefix {PAPER_ENDPOINT!r}"
-        )
+    require_paper_endpoint(endpoint)
     nested = nested_mutable_client_method(gateway)
     if nested is not None:
         raise InvalidBrokerStateError(

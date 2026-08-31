@@ -18,7 +18,7 @@ from opaca.orchestration.reserve import evaluate_and_reserve
 from opaca.persistence.types import ReservationKind
 from opaca.reconciliation.service import reconcile
 
-from tests.execution_helpers import make_world
+from tests.execution_helpers import freeze_submit_clock, make_world
 from tests.helpers import DEFAULT_NOW
 from tests.market_helpers import canonical_quote, universe_quotes
 
@@ -79,15 +79,16 @@ class TestSubmittedEconomics:
         ]
         assert cash == [Decimal("101.00")]
         mutate = world.mutate()
-        result = execute_reserved_proposal(
-            world.store,
-            world.read(),
-            mutate,
-            proposal,
-            now=DEFAULT_NOW,
-            prices=prices,
-            price_bindings=bindings,
-        )
+        with freeze_submit_clock(DEFAULT_NOW):
+            result = execute_reserved_proposal(
+                world.store,
+                world.read(),
+                mutate,
+                proposal,
+                now=DEFAULT_NOW,
+                prices=prices,
+                price_bindings=bindings,
+            )
         assert result.blocked is False
         assert result.submitted is True
         cid = proposal.legs[0].client_order_id

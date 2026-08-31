@@ -4,8 +4,10 @@ The red-team defect: a caller could pass TreasuryGuard ``prices['SGOV']=100``
 while the executable leg used ``reference_price=0.01``. Those surfaces are
 now bound.
 
-Without an explicit ``BoundExecutionPrice`` map, every leg must satisfy
-``prices[symbol] == leg.reference_price``.
+Without an explicit ``BoundExecutionPrice`` map, reservation still requires
+``prices[symbol] == leg.reference_price``. The mutating path refuses a missing
+or empty map: execution eligibility cannot be constructed from two matching
+caller-controlled prices.
 
 With bindings (live-paper BUY), both values are derived from the same
 ``CanonicalMarketPrice``:

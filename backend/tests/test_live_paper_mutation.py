@@ -52,7 +52,7 @@ def test_live_paper_mutation_buy_one_sgov(tmp_path: Path) -> None:
     mutate = open_paper_execution_gateway_from_env()
     market = open_paper_market_data_from_env()
     assert_paper_execution_gateway(mutate)
-    assert mutate.endpoint.startswith(PAPER_ENDPOINT)
+    assert mutate.endpoint == PAPER_ENDPOINT
     clock = read.get_clock()
     if clock.get("is_open") is not True:
         pytest.fail("market is not open; refusing live paper mutation")

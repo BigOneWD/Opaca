@@ -22,9 +22,9 @@ from opaca.broker.errors import PaperEnvironmentError
 from opaca.broker.gateway import (
     ASSET_UNIVERSE,
     LIVE_ENDPOINT,
-    PAPER_ENDPOINT,
     AlpacaGateway,
     assert_read_only_gateway,
+    require_paper_endpoint,
 )
 from opaca.broker.paper import ENV_KEY_ID, ENV_SECRET
 from opaca.calendar.us_trading_calendar import US_TRADING_CALENDAR
@@ -123,13 +123,9 @@ def credentials_present() -> bool:
 
 def _verify_paper_endpoint(gateway: object) -> str:
     endpoint = str(getattr(gateway, "endpoint", "") or "")
-    if endpoint.startswith(LIVE_ENDPOINT):
+    if endpoint == LIVE_ENDPOINT:
         raise PaperEnvironmentError("live Alpaca endpoint is forbidden")
-    if not endpoint.startswith(PAPER_ENDPOINT):
-        raise PaperEnvironmentError(
-            f"paper endpoint not confirmed; expected prefix {PAPER_ENDPOINT!r}"
-        )
-    return endpoint
+    return require_paper_endpoint(endpoint)
 
 
 def _account_status(account: Mapping[str, object]) -> tuple[str, Decimal | None]:

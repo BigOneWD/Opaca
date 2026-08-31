@@ -22,9 +22,9 @@ from opaca.persistence.store import SQLiteStore
 from opaca.persistence.types import ReservationKind
 from opaca.reconciliation.service import reconcile
 
-from tests.execution_helpers import make_world
+from tests.execution_helpers import freeze_submit_clock, make_world
 from tests.helpers import DEFAULT_NOW, DEFAULT_PRICES, make_order, make_proposal
-from tests.market_helpers import universe_quotes
+from tests.market_helpers import canonical_quote, universe_quotes
 
 
 class TestMismatchRejected:
@@ -185,4 +185,274 @@ class TestStaleBindingCannotAuthorize:
         assert result.blocked is True
         assert result.submitted is False
         assert mutate.submit_calls == 0
+        world.store.close()
+
+
+class TestMandatoryBindings:
+    def test_no_bindings_with_real_paper_gateway_blocked(self, tmp_path: Path) -> None:
+        from opaca.broker.gateway import PAPER_ENDPOINT
+        from opaca.broker.paper_execution import AlpacaPaperExecutionGateway
+
+        class PaperClient:
+            _base_url = PAPER_ENDPOINT
+            _paper = True
+            submits = 0
+
+            def submit_order(self, *args: object, **kwargs: object) -> str:
+                PaperClient.submits += 1
+                raise AssertionError("must not submit")
+
+            def cancel_order_by_id(self, *args: object, **kwargs: object) -> None:
+                raise AssertionError("must not cancel")
+
+        world = make_world(tmp_path)
+        proposal = make_proposal(
+            "no-bind-real",
+            [make_order("no-bind-real", 0, "SGOV", Side.BUY, "1", DEFAULT_PRICES["SGOV"])],
+        )
+        recon = reconcile(world.store, world.read(), now=DEFAULT_NOW)
+        assert recon.snapshot is not None
+        evaluate_and_reserve(
+            world.store,
+            proposal,
+            now=DEFAULT_NOW,
+            prices=DEFAULT_PRICES,
+            expected_snapshot_version=recon.snapshot.version,
+        )
+        gateway = AlpacaPaperExecutionGateway(PaperClient())
+        result = execute_reserved_proposal(
+            world.store,
+            world.read(),
+            gateway,
+            proposal,
+            now=DEFAULT_NOW,
+            prices=DEFAULT_PRICES,
+        )
+        assert result.blocked is True
+        assert result.submitted is False
+        assert PaperClient.submits == 0
+        world.store.close()
+
+    def test_empty_bindings_blocked(self, tmp_path: Path) -> None:
+        world = make_world(tmp_path)
+        proposal = make_proposal(
+            "empty-bind",
+            [make_order("empty-bind", 0, "SGOV", Side.BUY, "1", DEFAULT_PRICES["SGOV"])],
+        )
+        recon = reconcile(world.store, world.read(), now=DEFAULT_NOW)
+        assert recon.snapshot is not None
+        evaluate_and_reserve(
+            world.store,
+            proposal,
+            now=DEFAULT_NOW,
+            prices=DEFAULT_PRICES,
+            expected_snapshot_version=recon.snapshot.version,
+        )
+        mutate = world.mutate()
+        result = execute_reserved_proposal(
+            world.store,
+            world.read(),
+            mutate,
+            proposal,
+            now=DEFAULT_NOW,
+            prices=DEFAULT_PRICES,
+            price_bindings={},
+        )
+        assert result.blocked is True
+        assert mutate.submit_calls == 0
+        world.store.close()
+
+    def test_missing_one_leg_in_multi_leg_blocked(self, tmp_path: Path) -> None:
+        world = make_world(tmp_path)
+        proposal = make_proposal(
+            "miss-leg",
+            [
+                make_order("miss-leg", 0, "SGOV", Side.BUY, "1", DEFAULT_PRICES["SGOV"]),
+                make_order("miss-leg", 1, "BIL", Side.BUY, "1", DEFAULT_PRICES["BIL"]),
+            ],
+        )
+        recon = reconcile(world.store, world.read(), now=DEFAULT_NOW)
+        assert recon.snapshot is not None
+        evaluate_and_reserve(
+            world.store,
+            proposal,
+            now=DEFAULT_NOW,
+            prices=DEFAULT_PRICES,
+            expected_snapshot_version=recon.snapshot.version,
+        )
+        sgov = bind_buy(
+            canonical_quote("SGOV", DEFAULT_PRICES["SGOV"]), Decimal("1"), tolerance=Decimal("0")
+        )
+        mutate = world.mutate()
+        result = execute_reserved_proposal(
+            world.store,
+            world.read(),
+            mutate,
+            proposal,
+            now=DEFAULT_NOW,
+            prices=DEFAULT_PRICES,
+            price_bindings={"SGOV": sgov},
+        )
+        assert result.blocked is True
+        assert mutate.submit_calls == 0
+        world.store.close()
+
+    def test_wrong_symbol_blocked(self, tmp_path: Path) -> None:
+        world = make_world(tmp_path)
+        proposal = make_proposal(
+            "wrong-sym",
+            [make_order("wrong-sym", 0, "SGOV", Side.BUY, "1", DEFAULT_PRICES["SGOV"])],
+        )
+        recon = reconcile(world.store, world.read(), now=DEFAULT_NOW)
+        assert recon.snapshot is not None
+        evaluate_and_reserve(
+            world.store,
+            proposal,
+            now=DEFAULT_NOW,
+            prices=DEFAULT_PRICES,
+            expected_snapshot_version=recon.snapshot.version,
+        )
+        bil = bind_buy(
+            canonical_quote("BIL", DEFAULT_PRICES["BIL"]), Decimal("1"), tolerance=Decimal("0")
+        )
+        mutate = world.mutate()
+        result = execute_reserved_proposal(
+            world.store,
+            world.read(),
+            mutate,
+            proposal,
+            now=DEFAULT_NOW,
+            prices=DEFAULT_PRICES,
+            price_bindings={"SGOV": bil},
+        )
+        assert result.blocked is True
+        assert mutate.submit_calls == 0
+        world.store.close()
+
+    def test_wrong_quantity_blocked(self, tmp_path: Path) -> None:
+        world = make_world(tmp_path)
+        proposal = make_proposal(
+            "wrong-qty",
+            [make_order("wrong-qty", 0, "SGOV", Side.BUY, "1", DEFAULT_PRICES["SGOV"])],
+        )
+        recon = reconcile(world.store, world.read(), now=DEFAULT_NOW)
+        assert recon.snapshot is not None
+        evaluate_and_reserve(
+            world.store,
+            proposal,
+            now=DEFAULT_NOW,
+            prices=DEFAULT_PRICES,
+            expected_snapshot_version=recon.snapshot.version,
+        )
+        bound = bind_buy(
+            canonical_quote("SGOV", DEFAULT_PRICES["SGOV"]), Decimal("5"), tolerance=Decimal("0")
+        )
+        mutate = world.mutate()
+        result = execute_reserved_proposal(
+            world.store,
+            world.read(),
+            mutate,
+            proposal,
+            now=DEFAULT_NOW,
+            prices=DEFAULT_PRICES,
+            price_bindings={"SGOV": bound},
+        )
+        assert result.blocked is True
+        assert mutate.submit_calls == 0
+        world.store.close()
+
+    def test_matched_invented_pair_blocked(self, tmp_path: Path) -> None:
+        world = make_world(tmp_path)
+        invented = Decimal("0.01")
+        proposal = make_proposal(
+            "invented",
+            [make_order("invented", 0, "SGOV", Side.SELL, "100", invented)],
+        )
+        prices = {"SGOV": invented, "BIL": invented, "SHV": invented}
+        recon = reconcile(world.store, world.read(), now=DEFAULT_NOW)
+        assert recon.snapshot is not None
+        outcome = evaluate_and_reserve(
+            world.store,
+            proposal,
+            now=DEFAULT_NOW,
+            prices=prices,
+            expected_snapshot_version=recon.snapshot.version,
+        )
+        assert outcome.is_auto is True
+        mutate = world.mutate()
+        result = execute_reserved_proposal(
+            world.store,
+            world.read(),
+            mutate,
+            proposal,
+            now=DEFAULT_NOW,
+            prices=prices,
+        )
+        assert result.blocked is True
+        assert result.submitted is False
+        assert mutate.submit_calls == 0
+        world.store.close()
+
+    def test_caller_changes_price_after_reservation_blocked(self, tmp_path: Path) -> None:
+        world = make_world(tmp_path)
+        quotes = universe_quotes(sgov=Decimal("100.00"))
+        bound = bind_buy(quotes["SGOV"], Decimal("1"))
+        proposal, prices, bindings = bind_single_leg_proposal("changed", bound, quotes)
+        recon = reconcile(world.store, world.read(), now=DEFAULT_NOW)
+        assert recon.snapshot is not None
+        outcome = evaluate_and_reserve(
+            world.store,
+            proposal,
+            now=DEFAULT_NOW,
+            prices=prices,
+            expected_snapshot_version=recon.snapshot.version,
+            price_bindings=bindings,
+        )
+        assert outcome.is_auto is True
+        cheap = dict(prices)
+        cheap["SGOV"] = Decimal("0.01")
+        mutate = world.mutate()
+        result = execute_reserved_proposal(
+            world.store,
+            world.read(),
+            mutate,
+            proposal,
+            now=DEFAULT_NOW,
+            prices=cheap,
+            price_bindings=bindings,
+        )
+        assert result.blocked is True
+        assert mutate.submit_calls == 0
+        world.store.close()
+
+    def test_valid_canonical_binding_proceeds(self, tmp_path: Path) -> None:
+        world = make_world(tmp_path)
+        quotes = universe_quotes()
+        bound = bind_buy(quotes["SGOV"], Decimal("1"), tolerance=Decimal("0"))
+        proposal, prices, bindings = bind_single_leg_proposal("valid-bind", bound, quotes)
+        recon = reconcile(world.store, world.read(), now=DEFAULT_NOW)
+        assert recon.snapshot is not None
+        outcome = evaluate_and_reserve(
+            world.store,
+            proposal,
+            now=DEFAULT_NOW,
+            prices=prices,
+            expected_snapshot_version=recon.snapshot.version,
+            price_bindings=bindings,
+        )
+        assert outcome.is_auto is True
+        mutate = world.mutate()
+        with freeze_submit_clock(DEFAULT_NOW):
+            result = execute_reserved_proposal(
+                world.store,
+                world.read(),
+                mutate,
+                proposal,
+                now=DEFAULT_NOW,
+                prices=prices,
+                price_bindings=bindings,
+            )
+        assert result.blocked is False
+        assert result.submitted is True
+        assert mutate.submit_calls == 1
         world.store.close()

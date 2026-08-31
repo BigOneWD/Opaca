@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 
 from opaca.broker.errors import PaperEnvironmentError
-from opaca.broker.gateway import LIVE_ENDPOINT, PAPER_ENDPOINT
+from opaca.broker.gateway import require_paper_endpoint
 
 ENV_KEY_ID = "APCA_API_KEY_ID"
 ENV_SECRET = "APCA_API_SECRET_KEY"
@@ -26,13 +26,7 @@ def client_base_url(client: object) -> str:
 
 def verify_paper_client(client: object) -> str:
     """Verify the constructed client's endpoint. Do not trust a config flag alone."""
-    url = client_base_url(client)
-    if url.startswith(LIVE_ENDPOINT):
-        raise PaperEnvironmentError("live Alpaca endpoint is forbidden")
-    if not url.startswith(PAPER_ENDPOINT):
-        raise PaperEnvironmentError(
-            f"paper endpoint not confirmed; expected prefix {PAPER_ENDPOINT!r}"
-        )
+    url = require_paper_endpoint(client_base_url(client))
     paper_flag = getattr(client, "_paper", None)
     if paper_flag is False:
         raise PaperEnvironmentError("TradingClient paper flag is false")

@@ -119,7 +119,7 @@ class TestReadOnlySurface:
             _base_url = "https://paper-api.alpaca.markets"
             _paper = True
 
-        assert verify_paper_client(PaperClient()).startswith("https://paper-api.alpaca.markets")
+        assert verify_paper_client(PaperClient()) == "https://paper-api.alpaca.markets"
 
 
 class TestAdapters:

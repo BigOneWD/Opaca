@@ -10,7 +10,11 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Protocol, runtime_checkable
 
-from opaca.broker.errors import BrokerUnavailableError, InvalidBrokerStateError
+from opaca.broker.errors import (
+    BrokerUnavailableError,
+    InvalidBrokerStateError,
+    PaperEnvironmentError,
+)
 from opaca.broker.mutation import (
     ALLOWED_GATEWAY_METHODS,
     FORBIDDEN_BROKER_MUTATIONS,
@@ -19,7 +23,86 @@ from opaca.broker.mutation import (
 
 PAPER_ENDPOINT = "https://paper-api.alpaca.markets"
 LIVE_ENDPOINT = "https://api.alpaca.markets"
+PAPER_HOSTNAME = "paper-api.alpaca.markets"
+LIVE_HOSTNAME = "api.alpaca.markets"
 ASSET_UNIVERSE: tuple[str, ...] = ("SGOV", "BIL", "SHV")
+
+
+def _endpoint_parts(
+    endpoint: str,
+) -> tuple[str, str, int | None, str, str, str, str | None] | None:
+    if not endpoint:
+        return None
+    if "://" not in endpoint:
+        return None
+    scheme, remainder = endpoint.split("://", 1)
+    if not scheme or not remainder:
+        return None
+    fragment = ""
+    if "#" in remainder:
+        remainder, fragment = remainder.split("#", 1)
+    query = ""
+    if "?" in remainder:
+        remainder, query = remainder.split("?", 1)
+    if "/" in remainder:
+        authority, path_rest = remainder.split("/", 1)
+        path = "/" + path_rest
+    else:
+        authority = remainder
+        path = ""
+    userinfo: str | None
+    if "@" in authority:
+        userinfo, authority = authority.rsplit("@", 1)
+    else:
+        userinfo = None
+    if not authority or authority.startswith("["):
+        return None
+    port: int | None
+    hostname = authority
+    if ":" in authority:
+        host, port_text = authority.rsplit(":", 1)
+        if not host or not port_text.isdigit():
+            return None
+        hostname = host
+        port = int(port_text)
+    else:
+        port = None
+    if not hostname or ".." in hostname or hostname.startswith(".") or hostname.endswith("."):
+        return None
+    return (scheme.lower(), hostname.lower(), port, path, query, fragment, userinfo)
+
+
+def is_live_endpoint(endpoint: str) -> bool:
+    parts = _endpoint_parts(endpoint)
+    if parts is None:
+        return False
+    scheme, hostname, _port, _path, _query, _fragment, _userinfo = parts
+    return scheme == "https" and hostname == LIVE_HOSTNAME
+
+
+def is_exact_paper_endpoint(endpoint: str) -> bool:
+    parts = _endpoint_parts(endpoint)
+    if parts is None:
+        return False
+    scheme, hostname, port, path, query, fragment, userinfo = parts
+    return (
+        scheme == "https"
+        and hostname == PAPER_HOSTNAME
+        and port is None
+        and userinfo is None
+        and query == ""
+        and fragment == ""
+        and path in {"", "/"}
+    )
+
+
+def require_paper_endpoint(endpoint: str) -> str:
+    if is_live_endpoint(endpoint):
+        raise PaperEnvironmentError("live Alpaca endpoint is forbidden")
+    if not is_exact_paper_endpoint(endpoint):
+        raise PaperEnvironmentError("paper endpoint not confirmed")
+    return PAPER_ENDPOINT
+
 
 BrokerPayload = Mapping[str, object]
 
