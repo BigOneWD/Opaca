@@ -1,12 +1,14 @@
 # Opaca — red-team suite
 
-Three phases of adversarial review live here:
+Four phases of adversarial review live here:
 
 * `redteam/*.py` + `closeout_bc5fcda/` — **Treasury Core** (`feat/treasury-core`)
 * `reconciliation_3fdabf3/` — **Phase 2 reconciliation state + SQLite atomic
   reservation** (`feat/reconciliation-state`)
 * `paper_execution_79a7b1b/` — **Phase 3 paper execution lifecycle**
   (`feat/paper-execution`)
+* `prelive_11d1cde/` — **Pre-live readiness: bounded live-paper pricing and
+  read-only preflight** (`feat/prelive-readiness`)
 
 Each subdirectory carries its own README, and every suite runs against a
 checkout of the commit it reviews, never against this branch.
@@ -281,3 +283,75 @@ against `SCHEMA_VERSION`; and the two Phase 2 findings listed above were inverte
 
 Full reports: `claude/paper-execution-redteam-79a7b1b.md` (architecture review)
 and `claude/paper-execution-retest-cd3dc86.md` (final closeout).
+
+---
+
+## Pre-live readiness — bounded live-paper pricing and preflight @ 11d1cde
+
+Target: `origin/feat/prelive-readiness @ 11d1cdeb4d283ba68264823e500ec14c58bf7324`
+(`feat: add bounded live-paper pricing and preflight`), on production baseline
+`main @ da4a55ff5eb5d0f11cb5fbdcaec8a5f25aba21d9` (tag `paper-execution-complete`),
+which is the target's direct parent — the branch is a single commit.
+
+    git worktree add --detach /tmp/pl 11d1cdeb4d283ba68264823e500ec14c58bf7324
+    OPACA_BACKEND=/tmp/pl/backend pytest -q redteam/prelive_11d1cde
+    #   -> 156 passed, 5 failed   (all five are FINDING markers)
+    OPACA_BACKEND=/tmp/pl/backend pytest -q redteam/
+    #   -> 936 collected, 16-17 failed  (5 Phase 3 pre-live markers
+    #      + 5 findings here + 6 carried Phase 2 P2/P3, plus the
+    #      intermittent demo-DB race observation)
+
+**161 collected / 156 passed / 5 findings.** Verdict: **PASS WITH FINDINGS**,
+**FIX THEN RETEST** — not merged. **First paper trade readiness: NOT READY.**
+
+This is the final gate before a real order. Reviewed **offline only** — no
+credentials requested, no live call, and **no broker mutation of any kind**,
+including against the paper endpoint.
+
+Builder gates all reproduce at the target: 407 collected / 404 passed / 3 skipped
+(the three live smokes, correctly gated), `ruff check` clean, `ruff format
+--check` clean on 85 files, `mypy --strict` clean on 85 files, `git diff --check`
+exit 0, 0 bare `assert` across 49 production modules, green under `python -O`
+and `-OO`, a credential scan with **0** literals across 114 tracked files, and a
+mutation capability scan showing the surface is still **two call sites**, both in
+`execution/service.py`, both on `mutate_gateway`.
+
+| area | verdict |
+| --- | --- |
+| canonical live price source (Alpaca IEX latest trade) | PASS |
+| price validation / freshness (15 s) | PASS |
+| price TOCTOU | **FAIL** |
+| $0.01 reference-price attack | **BLOCKED** |
+| canonical price binding | PASS on the bound path; not a precondition |
+| bounded BUY limit (10 bps) | PASS |
+| maximum cash exposure (`qty × LIMIT`) | PASS |
+| fresh schema-v2 demo DB | PASS |
+| read-only preflight | PASS |
+| Phase 3 execution regression | PASS |
+| paper-only mutation boundary | PASS |
+
+Two P1 items are named as pre-live blockers, both new in this branch:
+
+1. **P1-1** — no quote-freshness re-validation at the final mutation boundary.
+   `_submit_leg` reads only the kill switch. With 16.0 s of real elapsed time
+   injected into the pre-submit window the broker was still mutated
+   (`submit_calls == 1`, required 0). `execution/service.py` never reads a wall
+   clock, and the documented live smoke freezes `now` **before** the quote fetch
+   and then makes 13 broker round-trips before submitting.
+2. **P1-2** — the canonical binding is opt-in. `price_bindings` defaults to
+   `None`, reducing the guard to "the caller's two numbers agree with each
+   other". A matched invented pair at $0.01 reaches AUTO for 1,000,000 SGOV and
+   is submitted as a DAY LIMIT at the invented price.
+
+Plus **P2-1** (all four paper-endpoint guards are unanchored `startswith`, so
+`paper-api.alpaca.markets.evil.com` is accepted — and `test_s18` in
+`paper_execution_79a7b1b/` currently asserts that it *is*), **P2-2** (five
+market-data adapter tests skip silently when `pytz` is absent), and three P3
+residuals recorded in the full report.
+
+Three of the five pre-live markers in `paper_execution_79a7b1b/` **invert** at
+this commit, which is the evidence the fixes are real: the package now has a
+market-data client, the live smoke no longer prices from `DEFAULT_PRICES`, and an
+understated `reference_price` no longer flips the authority decision to AUTO.
+
+Full report: `claude/prelive-readiness-redteam-11d1cde.md`.
