@@ -64,6 +64,15 @@ def _parse_iso_date(value: object) -> date:
         raise IntakeBlockedError("due_date must be YYYY-MM-DD") from exc
 
 
+def _parse_certainty(value: object) -> Certainty:
+    if not isinstance(value, str):
+        raise IntakeBlockedError("certainty must be CONFIRMED or UNCERTAIN")
+    try:
+        return Certainty(value)
+    except ValueError as exc:
+        raise IntakeBlockedError("certainty must be CONFIRMED or UNCERTAIN") from exc
+
+
 def _candidate_id(
     source_sha256: str,
     name: str,
@@ -115,18 +124,17 @@ def parse_and_validate_extraction(
         name = _require_non_empty_string(candidate["name"], "name")
         if candidate["currency"] != "USD":
             raise IntakeBlockedError("currency must be USD")
-        try:
-            certainty = Certainty(candidate["certainty"])
-        except (TypeError, ValueError) as exc:
-            raise IntakeBlockedError("certainty must be CONFIRMED or UNCERTAIN") from exc
+        certainty = _parse_certainty(candidate["certainty"])
 
         source_excerpt = _require_non_empty_string(candidate["source_excerpt"], "source_excerpt")
         if _normalized_newlines(source_excerpt) not in normalized_document:
             raise IntakeBlockedError("MODEL_EVIDENCE_MISMATCH")
 
+        uncertainty_reason: str | None
         if certainty is Certainty.CONFIRMED:
             if candidate["uncertainty_reason"] is not None:
                 raise IntakeBlockedError("confirmed candidate cannot have uncertainty_reason")
+            uncertainty_reason = None
             amount = _parse_positive_decimal(candidate["amount"])
             stated_due_date = _parse_iso_date(candidate["due_date"])
             effective_due_date = stated_due_date
@@ -160,11 +168,7 @@ def parse_and_validate_extraction(
             stated_due_date=stated_due_date,
             effective_due_date=effective_due_date,
             certainty=certainty,
-            uncertainty_reason=(
-                None
-                if certainty is Certainty.CONFIRMED
-                else _require_non_empty_string(candidate["uncertainty_reason"], "uncertainty_reason")
-            ),
+            uncertainty_reason=uncertainty_reason,
             source_excerpt=source_excerpt,
             source_sha256=source_sha256,
             reserved_conservatively=reserved_conservatively,
