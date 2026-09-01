@@ -24,7 +24,7 @@ The AI may extract and explain obligations. It may not authorize trades, calcula
 - Preserve exact source evidence for every extracted candidate.
 - Distinguish `CONFIRMED` from `UNCERTAIN` obligations.
 - Conservatively reserve a known amount when its due date is uncertain.
-- Block trading when the document reveals a possible liability whose amount cannot be quantified safely.
+- Block downstream treasury use when the document reveals a possible liability whose amount cannot be quantified safely.
 - Feed effective validated obligations into the existing `Obligation` / `compute_liquidity` path without changing TreasuryGuard semantics.
 - Provide a read-only `python -m opaca intake-demo ...` command that never opens a broker mutation gateway.
 - Include deterministic offline fixtures and tests plus an optional real-model demo path.
@@ -80,6 +80,12 @@ ObligationIntakeResult
     +-- trade_blocked + block_reasons
     |
     v
+require_effective_obligations(result)
+    |
+    +-- blocked result -> raises IntakeBlockedError
+    +-- safe result -> tuple[Obligation, ...]
+    |
+    v
 existing compute_liquidity / TreasuryGuard inputs
 ```
 
@@ -113,7 +119,7 @@ Accepted `certainty` values are only:
 - `CONFIRMED`
 - `UNCERTAIN`
 
-`amount` and `due_date` may be `null` only for an `UNCERTAIN` candidate.
+`amount` and `due_date` may be `null` only for an `UNCERTAIN` candidate. The top-level object and candidate objects are strict: unknown extra keys are rejected rather than ignored.
 
 The model is explicitly instructed not to infer a missing date from common payment conventions and not to convert relative language unless the source provides the anchor needed to do so.
 
@@ -172,7 +178,7 @@ If a plausible obligation is extracted but its amount is missing or invalid, Opa
 - `trade_blocked = True`
 - reason `UNQUANTIFIED_OBLIGATION`
 
-No new trade may be authorized from that intake state. This is stricter than guessing a reserve amount.
+`require_effective_obligations(result)` raises `IntakeBlockedError` for this result. Callers therefore cannot accidentally treat a blocked intake as an empty obligation set. This slice does not modify the existing orchestration module; the safe accessor is the integration boundary used by new intake-aware callers and tests.
 
 ### 6.5 Invalid or hostile model output
 
@@ -180,6 +186,7 @@ The following block the intake run rather than being silently ignored:
 
 - invalid top-level JSON;
 - extra prose around JSON;
+- unknown extra schema keys;
 - wrong schema types;
 - more than 20 candidates;
 - non-USD currency in this slice;
@@ -213,6 +220,7 @@ Environment variables:
 Provider behavior:
 
 - use `/chat/completions`;
+- normalize one trailing slash on the configured base URL before appending the endpoint path;
 - `temperature=0`;
 - a fixed system prompt containing the extraction schema and no-guessing rules;
 - fixed request timeout of 30 seconds;
@@ -290,7 +298,7 @@ The command must not import or construct the paper mutation gateway.
 
 ## 9. Treasury-core integration
 
-The intake layer exposes only `effective_obligations` to the existing treasury layer.
+The intake layer exposes `effective_obligations`, but intake-aware callers must obtain them through `require_effective_obligations(result)`. That accessor raises on any blocked result and returns the typed obligation tuple only for a safe result.
 
 An integration test will prove:
 
@@ -298,9 +306,9 @@ An integration test will prove:
 2. an uncertain $80k obligation with no reliable due date is converted to an effective obligation due `as_of`;
 3. both amounts are subtracted by the existing `compute_liquidity` implementation;
 4. the uncertain $80k therefore cannot appear in investable surplus;
-5. an unquantified candidate sets `trade_blocked=True`, so orchestration must refuse to create an executable proposal from the intake result.
+5. an unquantified candidate makes `require_effective_obligations()` fail closed, so no intake-aware caller can obtain an executable empty-obligation view from that result.
 
-No TreasuryGuard check is altered. The new layer only makes its inputs more realistic and conservative.
+No TreasuryGuard or orchestration check is altered. The new layer only makes inputs more realistic and conservative.
 
 ## 10. Demo fixtures
 
@@ -337,13 +345,14 @@ Use TDD and keep all broker mutation paths out of scope.
 
 Required coverage:
 
-- exact JSON schema parsing;
+- exact JSON schema parsing, including rejection of extra keys;
 - real `Decimal` parsing, no binary float acceptance;
 - ISO date parsing;
 - exact evidence-match success/failure;
 - confirmed candidate conversion;
 - uncertain-known-amount conservative reservation;
-- unquantified exposure blocks trading;
+- unquantified exposure blocks downstream use;
+- `require_effective_obligations()` cannot return obligations for blocked intake;
 - malformed/hostile model responses fail closed;
 - candidate-count and document-size limits;
 - secret redaction/no key in diagnostics;
@@ -374,7 +383,7 @@ The slice is complete when:
 1. A real OpenAI-compatible model can parse the messy demo document into the strict extraction contract.
 2. At least one clear obligation becomes `CONFIRMED` with exact source evidence.
 3. At least one ambiguous obligation becomes `UNCERTAIN`, is reserved conservatively, and is visibly flagged for human review.
-4. An unquantified possible liability blocks trading rather than disappearing from treasury math.
+4. An unquantified possible liability blocks downstream use rather than disappearing from treasury math.
 5. The existing liquidity engine demonstrably excludes all effective confirmed/conservatively-reserved obligations from investable surplus.
 6. The command has no broker mutation capability.
 7. Offline, optimized-mode, lint, format, typing, and diff gates pass.
