@@ -26,6 +26,7 @@ from opaca.domain.models import Side
 from opaca.execution.gateway import assert_paper_execution_gateway
 from opaca.execution.service import execute_reserved_proposal
 from opaca.market.binding import bind_buy, bind_single_leg_proposal
+from opaca.market.quote import validate_canonical_quote
 from opaca.market.source import required_canonical_prices
 from opaca.orchestration.reserve import evaluate_and_reserve
 from opaca.persistence.demo import init_paper_demo_store
@@ -58,9 +59,9 @@ def test_live_paper_mutation_buy_one_sgov(tmp_path: Path) -> None:
     clock = read.get_clock()
     if clock.get("is_open") is not True:
         pytest.fail("market is not open; refusing live paper mutation")
-    now = datetime.now(UTC)
-    store = init_paper_demo_store(tmp_path / "opaca-paper-demo.db", now=now)
-    recon = reconcile(store, read, now=now)
+    reconciliation_now = datetime.now(UTC)
+    store = init_paper_demo_store(tmp_path / "opaca-paper-demo.db", now=reconciliation_now)
+    recon = reconcile(store, read, now=reconciliation_now)
     if recon.status is not ReconciliationStatus.RECONCILED or recon.snapshot is None:
         pytest.fail(f"reconciliation not clean: {recon.status.value} {recon.reasons}")
     canonical = required_canonical_prices(
@@ -68,8 +69,11 @@ def test_live_paper_mutation_buy_one_sgov(tmp_path: Path) -> None:
         proposal_symbols=("SGOV",),
         side_by_symbol={"SGOV": Side.BUY},
         positions=recon.snapshot.positions,
-        now=now,
+        now=reconciliation_now,
     )
+    decision_now = datetime.now(UTC)
+    for quote in canonical.values():
+        validate_canonical_quote(quote, now=decision_now)
     bound = bind_buy(canonical["SGOV"], Decimal("1"))
     proposal, prices, bindings = bind_single_leg_proposal("live-buy-1-sgov", bound, canonical)
     assert proposal.legs[0].client_order_id == deterministic_client_order_id("live-buy-1-sgov", 0)
@@ -78,7 +82,7 @@ def test_live_paper_mutation_buy_one_sgov(tmp_path: Path) -> None:
     reserved = evaluate_and_reserve(
         store,
         proposal,
-        now=now,
+        now=decision_now,
         prices=prices,
         expected_snapshot_version=recon.snapshot.version,
         price_bindings=bindings,
@@ -93,7 +97,7 @@ def test_live_paper_mutation_buy_one_sgov(tmp_path: Path) -> None:
         read,
         mutate,
         proposal,
-        now=now,
+        now=decision_now,
         prices=prices,
         price_bindings=bindings,
         market_data=market,

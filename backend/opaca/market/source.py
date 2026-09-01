@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Protocol, cast, runtime_checkable
 
@@ -23,7 +23,7 @@ from opaca.domain.money import (
     positive_money,
     require_positive_decimal,
 )
-from opaca.market.errors import MarketDataUnavailableError, QuoteValidationError
+from opaca.market.errors import FutureQuoteError, MarketDataUnavailableError, QuoteValidationError
 from opaca.market.quote import (
     DEFAULT_MAX_QUOTE_FETCH_AGE_SECONDS,
     QUOTE_SOURCE_LATEST_QUOTE_IEX,
@@ -294,6 +294,13 @@ def required_canonical_prices(
             raise MarketDataUnavailableError(f"no latest quote for {symbol}")
     decision_now = now
     latest_fetch = max(item.fetched_at for item in fetched.values())
+    forward_fetch_age = latest_fetch - now
+    if forward_fetch_age > timedelta(seconds=max_fetch_age_seconds):
+        raise FutureQuoteError(
+            f"latest quote fetched_at {latest_fetch.isoformat()} is "
+            f"{forward_fetch_age.total_seconds()}s in the future relative to supplied now "
+            f"and exceeds max fetch age {max_fetch_age_seconds}s; fail closed"
+        )
     if latest_fetch > decision_now:
         decision_now = latest_fetch
     canonical = canonical_prices_for_decision(fetched, side_by_symbol=side_by_symbol)
