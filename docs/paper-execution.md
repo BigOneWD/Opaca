@@ -70,14 +70,35 @@ A network timeout is not a release.
 
 ## Canonical market price
 
-The live-paper path reads Alpaca IEX **latest trade** for SGOV, BIL, and SHV
-(`opaca.market`). Credentials stay in the environment. The data client is
-separate from the mutating gateway. Missing, non-positive, non-finite, future,
-or stale quotes fail closed. There is no fallback to
-`tests.helpers.DEFAULT_PRICES` or any synthetic price.
+The live-paper path reads Alpaca IEX **latest quote**
+(`alpaca.stock.latest_quote.iex`) for symbols economically required by the
+current decision. BUY uses ask; SELL uses bid. Held permitted inventory
+needed only for valuation is marked at the bid. Credentials stay in the
+environment. The data client is separate from the mutating gateway.
+Missing, non-positive, non-finite, future, crossed, or stale required quotes
+fail closed. Unused whitelist symbols do not block. There is no fallback to
+last trade, SIP, `tests.helpers.DEFAULT_PRICES`, or any synthetic price.
 
-Default freshness: quote source timestamp must be ≤ **15 seconds** old
-(`DEFAULT_MAX_QUOTE_AGE_SECONDS`). Override per call; never silently extend.
+The hard freshness control, applied only to required symbols, is **fetch /
+decision freshness** (`DEFAULT_MAX_QUOTE_FETCH_AGE_SECONDS` = 15):
+`now - fetched_at` is how recently Opaca obtained the latest IEX quote from
+Alpaca. Override per call; never silently extend. Inclusive: fetch age equal
+to 15 seconds is accepted; one microsecond beyond is not.
+
+**Source-event age** (`now - source_timestamp`) is diagnostic metadata for
+IEX latest-BBO. A latest-quote request can be fetched now while the latest
+IEX BBO event itself is minutes old if IEX has emitted no newer event. It
+is recorded in the quote model, audit, preflight output, and execution
+diagnostics. It is not a hard execution blocker. A future
+`source_timestamp` remains invalid.
+
+Immediately before `submit_order`, the production PAPER path fetches a **new**
+IEX latest quote for the executable symbol. It does not re-check the old
+quote object. The new observation must pass fetch freshness ≤ 15s and a
+valid bid/ask/spread. BUY submits only if the final ASK is ≤ the already
+approved BUY LIMIT; the LIMIT is never widened. SELL is symmetric and is
+never made more aggressive than the approved bound. A final quote is an
+additional safety check, not new authority.
 
 `PolicyContext.prices[symbol]` and `leg.reference_price` are bound to one
 `CanonicalMarketPrice`. A caller cannot inject TreasuryGuard `100` and

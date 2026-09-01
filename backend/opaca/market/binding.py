@@ -27,7 +27,7 @@ from decimal import Decimal
 from types import MappingProxyType
 
 from opaca.domain.models import Proposal, ProposedOrder, Side
-from opaca.domain.money import require_positive_decimal, round_quantity
+from opaca.domain.money import ZERO, require_positive_decimal, round_quantity
 from opaca.market.errors import PriceBindingError
 from opaca.market.limit import (
     DEFAULT_BUY_LIMIT_TOLERANCE,
@@ -35,7 +35,12 @@ from opaca.market.limit import (
     max_buy_cash_obligation,
     sell_modeled_price,
 )
-from opaca.market.quote import CanonicalMarketPrice, require_permitted_symbol
+from opaca.market.quote import (
+    QUOTE_SOURCE_LATEST_QUOTE_IEX,
+    CanonicalMarketPrice,
+    IexLatestQuote,
+    require_permitted_symbol,
+)
 from opaca.policy.client_order_id import deterministic_client_order_id
 
 
@@ -227,3 +232,37 @@ def require_price_binding(
     failure = price_binding_failure(proposal, prices, bindings=bindings)
     if failure is not None:
         raise PriceBindingError(failure)
+
+
+def final_executable_quote_violation(
+    quote: IexLatestQuote,
+    bound: BoundExecutionPrice,
+) -> str | None:
+    """Return a fail-closed reason if the re-fetched quote exceeds approved authority.
+
+    A final quote is an additional safety check, not new authority. BUY LIMIT is
+    never widened. SELL LIMIT is never made more aggressive.
+    """
+    if quote.symbol != bound.quote.symbol:
+        return f"final quote symbol {quote.symbol} != approved {bound.quote.symbol}; fail closed"
+    if quote.source != QUOTE_SOURCE_LATEST_QUOTE_IEX:
+        return f"final quote source {quote.source!r} is not IEX latest quote; fail closed"
+    if bound.side is Side.BUY:
+        if quote.ask_size <= ZERO:
+            return f"BUY ask_size is unusable for {quote.symbol}; fail closed"
+        if quote.ask_price > bound.limit_price:
+            return (
+                f"final ASK {quote.ask_price} exceeds approved BUY LIMIT "
+                f"{bound.limit_price}; fail closed"
+            )
+        return None
+    if bound.side is Side.SELL:
+        if quote.bid_size <= ZERO:
+            return f"SELL bid_size is unusable for {quote.symbol}; fail closed"
+        if quote.bid_price < bound.limit_price:
+            return (
+                f"final BID {quote.bid_price} is below approved SELL LIMIT "
+                f"{bound.limit_price}; fail closed"
+            )
+        return None
+    return f"unsupported side {bound.side!r}"

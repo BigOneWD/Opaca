@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from enum import Enum
 
 import pytest
 from opaca.broker.adapters import (
     adapt_account,
+    adapt_asset,
     adapt_order_snapshot,
     adapt_position,
     map_order_status,
@@ -23,7 +25,7 @@ from opaca.broker.gateway import (
 )
 from opaca.broker.mutation import ALLOWED_GATEWAY_METHODS, FORBIDDEN_BROKER_MUTATIONS
 from opaca.broker.paper import verify_paper_client
-from opaca.domain.models import OrderState
+from opaca.domain.models import AssetStatus, OrderState
 from opaca.domain.money import MoneyError
 
 from tests.helpers import DEFAULT_NOW
@@ -182,3 +184,116 @@ class TestAdapters:
         position = adapt_position(position_payload(qty="100", qty_available="40"))
         assert position.quantity == Decimal("100")
         assert position.quantity_available == Decimal("40")
+
+
+class _EnumLike:
+    def __init__(self, value: str, *, name: str | None = None) -> None:
+        self.value = value
+        if name is not None:
+            self.name = name
+
+    def __str__(self) -> str:
+        return f"AssetStatus.{self.value}"
+
+
+class _ContainsActive:
+    def __str__(self) -> str:
+        return "AssetStatus.ACTIVE"
+
+
+class BrokerAssetStatus(Enum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+
+
+def _asset_payload(
+    *,
+    symbol: str = "SGOV",
+    status: object = "active",
+    tradable: object = True,
+    fractionable: object = True,
+    include_status: bool = True,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "symbol": symbol,
+        "tradable": tradable,
+        "fractionable": fractionable,
+    }
+    if include_status:
+        payload["status"] = status
+    return payload
+
+
+class TestAdaptAsset:
+    def test_plain_active_string(self) -> None:
+        state = adapt_asset(_asset_payload(status="active"))
+        assert state.status is AssetStatus.ACTIVE
+        assert state.symbol == "SGOV"
+
+    def test_plain_active_uppercase(self) -> None:
+        state = adapt_asset(_asset_payload(status="ACTIVE"))
+        assert state.status is AssetStatus.ACTIVE
+
+    def test_python_enum_active(self) -> None:
+        state = adapt_asset(_asset_payload(status=BrokerAssetStatus.ACTIVE))
+        assert state.status is AssetStatus.ACTIVE
+
+    def test_alpaca_py_asset_status_active(self) -> None:
+        from alpaca.trading.enums import AssetStatus as AlpacaAssetStatus
+
+        state = adapt_asset(_asset_payload(status=AlpacaAssetStatus.ACTIVE))
+        assert state.status is AssetStatus.ACTIVE
+        assert str(AlpacaAssetStatus.ACTIVE).lower() == "assetstatus.active"
+
+    def test_plain_inactive_is_inactive_not_active(self) -> None:
+        state = adapt_asset(_asset_payload(status="inactive"))
+        assert state.status is AssetStatus.INACTIVE
+        assert state.status.value == "inactive"
+
+    def test_enum_like_inactive_is_never_active(self) -> None:
+        state = adapt_asset(_asset_payload(status=BrokerAssetStatus.INACTIVE))
+        assert state.status is AssetStatus.INACTIVE
+        assert state.status.value == "inactive"
+        state = adapt_asset(_asset_payload(status=_EnumLike("inactive")))
+        assert state.status is AssetStatus.INACTIVE
+        assert state.status.value == "inactive"
+
+    def test_dotted_asset_status_string_is_rejected(self) -> None:
+        with pytest.raises(InvalidBrokerStateError, match="unknown asset status"):
+            adapt_asset(_asset_payload(status="AssetStatus.ACTIVE"))
+
+    def test_foo_active_is_rejected(self) -> None:
+        with pytest.raises(InvalidBrokerStateError, match="unknown asset status"):
+            adapt_asset(_asset_payload(status="foo.active"))
+
+    def test_not_active_is_rejected(self) -> None:
+        with pytest.raises(InvalidBrokerStateError, match="unknown asset status"):
+            adapt_asset(_asset_payload(status="not_active"))
+
+    def test_unknown_enum_value_is_rejected(self) -> None:
+        with pytest.raises(InvalidBrokerStateError, match="unknown asset status"):
+            adapt_asset(_asset_payload(status="delisted"))
+
+    def test_none_status_is_rejected(self) -> None:
+        payload = _asset_payload()
+        payload["status"] = None
+        with pytest.raises(InvalidBrokerStateError, match="missing broker field 'status'"):
+            adapt_asset(payload)
+
+    def test_arbitrary_object_is_rejected(self) -> None:
+        with pytest.raises(InvalidBrokerStateError, match="unknown asset status"):
+            adapt_asset(_asset_payload(status=object()))
+        with pytest.raises(InvalidBrokerStateError, match="unknown asset status"):
+            adapt_asset(_asset_payload(status=_ContainsActive()))
+
+    def test_missing_status_is_rejected(self) -> None:
+        with pytest.raises(InvalidBrokerStateError, match="missing broker field 'status'"):
+            adapt_asset(_asset_payload(include_status=False))
+
+    def test_tradable_non_bool_is_rejected(self) -> None:
+        with pytest.raises(InvalidBrokerStateError, match="tradable/fractionable must be bool"):
+            adapt_asset(_asset_payload(tradable="true"))
+
+    def test_fractionable_non_bool_is_rejected(self) -> None:
+        with pytest.raises(InvalidBrokerStateError, match="tradable/fractionable must be bool"):
+            adapt_asset(_asset_payload(fractionable=1))

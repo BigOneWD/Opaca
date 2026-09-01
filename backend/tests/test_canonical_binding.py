@@ -24,7 +24,7 @@ from opaca.reconciliation.service import reconcile
 
 from tests.execution_helpers import freeze_submit_clock, make_world
 from tests.helpers import DEFAULT_NOW, DEFAULT_PRICES, make_order, make_proposal
-from tests.market_helpers import canonical_quote, universe_quotes
+from tests.market_helpers import canonical_quote, market_data_from_bindings, universe_quotes
 
 
 class TestMismatchRejected:
@@ -451,6 +451,7 @@ class TestMandatoryBindings:
                 now=DEFAULT_NOW,
                 prices=prices,
                 price_bindings=bindings,
+                market_data=market_data_from_bindings(bindings),
             )
         assert result.blocked is False
         assert result.submitted is True

@@ -83,6 +83,29 @@ def _require_field(data: Mapping[str, object], key: str) -> object:
     return data[key]
 
 
+def _normalize_broker_enum_token(value: object) -> str | None:
+    """Return a case-normalized token from a string or enum-like object.
+
+    Prefers ``.value`` when it is a non-empty string. Otherwise accepts a plain
+    string. Uses ``.name`` only when the value path is unavailable. Does not
+    parse ``str(value)``, so the string ``"AssetStatus.ACTIVE"`` is not active.
+    """
+    raw = getattr(value, "value", None)
+    if isinstance(raw, str):
+        token = raw.strip().lower()
+        if token:
+            return token
+    if isinstance(value, str):
+        token = value.strip().lower()
+        return token or None
+    name = getattr(value, "name", None)
+    if isinstance(name, str):
+        token = name.strip().lower()
+        if token:
+            return token
+    return None
+
+
 def parse_decimal_field(
     data: Mapping[str, object], key: str, *, allow_negative: bool = False
 ) -> Decimal:
@@ -192,7 +215,9 @@ def adapt_position(raw: object) -> Position:
 def adapt_asset(raw: object) -> AssetState:
     data = as_mapping(raw)
     symbol = str(_require_field(data, "symbol"))
-    status_raw = str(_require_field(data, "status")).lower()
+    status_raw = _normalize_broker_enum_token(_require_field(data, "status"))
+    if status_raw is None:
+        raise InvalidBrokerStateError(f"unknown asset status for {symbol}")
     try:
         status = AssetStatus(status_raw)
     except ValueError as exc:

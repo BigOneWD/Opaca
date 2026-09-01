@@ -51,9 +51,19 @@ from opaca.execution.states import (
     map_broker_status,
     validate_transition,
 )
-from opaca.market.binding import BoundExecutionPrice, price_binding_failure
+from opaca.market.binding import (
+    BoundExecutionPrice,
+    final_executable_quote_violation,
+    price_binding_failure,
+)
 from opaca.market.errors import MarketDataError
-from opaca.market.quote import validate_canonical_quote
+from opaca.market.quote import (
+    executable_canonical_price,
+    quote_freshness_diagnostics,
+    validate_canonical_quote,
+    validate_iex_latest_quote,
+)
+from opaca.market.source import ReadOnlyMarketData
 from opaca.orchestration.context import build_policy_context
 from opaca.orchestration.reserve import proposal_hash
 from opaca.persistence.store import PersistenceError, SQLiteStore
@@ -129,6 +139,7 @@ def execute_reserved_proposal(
     calendar: TradingCalendar = US_TRADING_CALENDAR,
     environment_verified: bool = True,
     price_bindings: Mapping[str, BoundExecutionPrice] | None = None,
+    market_data: ReadOnlyMarketData | None = None,
 ) -> ExecutionResult:
     """Fresh recon + TreasuryGuard + authority, then at most one submit per leg."""
     assert_read_only_gateway(read_gateway)
@@ -188,6 +199,7 @@ def execute_reserved_proposal(
             now=now,
             calendar=calendar,
             price_bindings=price_bindings,
+            market_data=market_data,
         )
         attempted.append(leg.client_order_id)
         if last.state is not ExecutionState.NOT_SUBMITTED:
@@ -561,6 +573,7 @@ def _submit_leg(
     now: datetime,
     calendar: TradingCalendar,
     price_bindings: Mapping[str, BoundExecutionPrice] | None,
+    market_data: ReadOnlyMarketData | None,
 ) -> ExecutionOrderRecord:
     request = PaperOrderRequest(
         symbol=leg.symbol,
@@ -586,9 +599,36 @@ def _submit_leg(
             now=now,
             reason="canonical binding missing for mutation; fail closed",
         )
-    boundary_now = _utc_now()
+    if market_data is None:
+        return _mark_not_submitted(
+            store,
+            leg.client_order_id,
+            now=now,
+            reason="final IEX quote re-fetch required; fail closed",
+        )
     try:
-        validate_canonical_quote(bound.quote, now=boundary_now)
+        final_quote = market_data.get_latest_quote(leg.symbol)
+        boundary_now = _utc_now()
+        validate_iex_latest_quote(final_quote, now=boundary_now)
+        executable_canonical_price(final_quote, leg.side)
+        quote_detail = quote_freshness_diagnostics(final_quote, now=boundary_now)
+        store.record_audit(
+            AuditEventType.EXECUTION_REVALIDATED,
+            now,
+            proposal_id=proposal.proposal_id,
+            reason="final IEX quote re-fetch",
+            detail=quote_detail,
+            broker_identifiers=leg.client_order_id,
+        )
+        bound_reason = final_executable_quote_violation(final_quote, bound)
+        if bound_reason is not None:
+            return _mark_not_submitted(
+                store,
+                leg.client_order_id,
+                now=now,
+                reason=bound_reason,
+                detail=quote_detail,
+            )
     except MarketDataError as exc:
         return _mark_not_submitted(
             store,
@@ -1022,6 +1062,7 @@ def _mark_not_submitted(
     *,
     now: datetime,
     reason: str,
+    detail: str = "",
 ) -> ExecutionOrderRecord:
     with store.begin_immediate() as conn:
         current = store.get_execution_order(client_order_id, conn=conn)
@@ -1041,6 +1082,7 @@ def _mark_not_submitted(
             now,
             proposal_id=updated.proposal_id,
             reason=reason,
+            detail=detail,
             broker_identifiers=client_order_id,
             conn=conn,
         )
@@ -1049,6 +1091,7 @@ def _mark_not_submitted(
             now,
             proposal_id=updated.proposal_id,
             reason=reason,
+            detail=detail,
             broker_identifiers=client_order_id,
             conn=conn,
         )

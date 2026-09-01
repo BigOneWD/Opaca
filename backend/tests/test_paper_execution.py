@@ -47,6 +47,7 @@ from tests.execution_helpers import (
     sell_qty,
 )
 from tests.helpers import DEFAULT_NOW, DEFAULT_PRICES, make_order, make_proposal
+from tests.market_helpers import market_data_from_bindings
 
 
 def _execute(
@@ -55,6 +56,7 @@ def _execute(
     mutate: PaperMutatingGateway,
     now: datetime = DEFAULT_NOW,
 ) -> ExecutionResult:
+    bindings = bindings_for_proposal(proposal, now=now)
     with freeze_submit_clock(now):
         return execute_reserved_proposal(
             world.store,
@@ -63,7 +65,8 @@ def _execute(
             proposal,
             now=now,
             prices=DEFAULT_PRICES,
-            price_bindings=bindings_for_proposal(proposal, now=now),
+            price_bindings=bindings,
+            market_data=market_data_from_bindings(bindings),
         )
 
 
@@ -612,6 +615,7 @@ class TestSettlement:
             scenario.operating_reserve,
             friday.date(),
         )
+        bindings = bindings_for_proposal(proposal, now=friday)
         with freeze_submit_clock(friday):
             result = execute_reserved_proposal(
                 world.store,
@@ -620,7 +624,8 @@ class TestSettlement:
                 proposal,
                 now=friday,
                 prices=DEFAULT_PRICES,
-                price_bindings=bindings_for_proposal(proposal, now=friday),
+                price_bindings=bindings,
+                market_data=market_data_from_bindings(bindings),
             )
         assert result.state is ExecutionState.FILLED
         cash_after = Decimal(str(world.account["cash"]))
@@ -656,6 +661,7 @@ class TestSettlement:
         world = make_world(tmp_path, qty="10", now=friday)
         proposal = sell_qty("hol-sell", "10")
         assert reserve_proposal(world, proposal, now=friday)[1].is_auto is True
+        bindings = bindings_for_proposal(proposal, now=friday)
         with freeze_submit_clock(friday):
             result = execute_reserved_proposal(
                 world.store,
@@ -664,7 +670,8 @@ class TestSettlement:
                 proposal,
                 now=friday,
                 prices=DEFAULT_PRICES,
-                price_bindings=bindings_for_proposal(proposal, now=friday),
+                price_bindings=bindings,
+                market_data=market_data_from_bindings(bindings),
             )
         assert result.state is ExecutionState.FILLED
         events = world.store.load_settlement_events()

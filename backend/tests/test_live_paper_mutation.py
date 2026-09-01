@@ -5,7 +5,7 @@ Intended manual invocation later:
     pytest --live-paper-mutation tests/test_live_paper_mutation.py
 
 This submits BUY 1 SGOV only after credentials, paper endpoint, market state,
-fresh quote, reconciliation, bound LIMIT, policy, and AUTO authority all pass.
+fresh IEX quote, reconciliation, bound LIMIT, policy, and AUTO authority all pass.
 
 A prior preflight report is not accepted as authorization. This path always
 re-runs quote → recon → TreasuryGuard → authority → kill switch → LIMIT.
@@ -20,13 +20,13 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
-from opaca.broker.gateway import ASSET_UNIVERSE, PAPER_ENDPOINT
+from opaca.broker.gateway import PAPER_ENDPOINT
 from opaca.broker.paper import ENV_KEY_ID, ENV_SECRET
+from opaca.domain.models import Side
 from opaca.execution.gateway import assert_paper_execution_gateway
 from opaca.execution.service import execute_reserved_proposal
 from opaca.market.binding import bind_buy, bind_single_leg_proposal
-from opaca.market.quote import validate_canonical_quote
-from opaca.market.source import latest_trades
+from opaca.market.source import required_canonical_prices
 from opaca.orchestration.reserve import evaluate_and_reserve
 from opaca.persistence.demo import init_paper_demo_store
 from opaca.persistence.types import ReconciliationStatus
@@ -53,22 +53,28 @@ def test_live_paper_mutation_buy_one_sgov(tmp_path: Path) -> None:
     market = open_paper_market_data_from_env()
     assert_paper_execution_gateway(mutate)
     assert mutate.endpoint == PAPER_ENDPOINT
+    account = read.get_account()
+    _ = account
     clock = read.get_clock()
     if clock.get("is_open") is not True:
         pytest.fail("market is not open; refusing live paper mutation")
     now = datetime.now(UTC)
-    quotes = latest_trades(market, ASSET_UNIVERSE)
-    for quote in quotes.values():
-        validate_canonical_quote(quote, now=now)
-    bound = bind_buy(quotes["SGOV"], Decimal("1"))
-    proposal, prices, bindings = bind_single_leg_proposal("live-buy-1-sgov", bound, quotes)
-    assert proposal.legs[0].client_order_id == deterministic_client_order_id("live-buy-1-sgov", 0)
-    assert proposal.legs[0].reference_price == bound.limit_price
-    assert prices["SGOV"] == bound.valuation_price
     store = init_paper_demo_store(tmp_path / "opaca-paper-demo.db", now=now)
     recon = reconcile(store, read, now=now)
     if recon.status is not ReconciliationStatus.RECONCILED or recon.snapshot is None:
         pytest.fail(f"reconciliation not clean: {recon.status.value} {recon.reasons}")
+    canonical = required_canonical_prices(
+        market,
+        proposal_symbols=("SGOV",),
+        side_by_symbol={"SGOV": Side.BUY},
+        positions=recon.snapshot.positions,
+        now=now,
+    )
+    bound = bind_buy(canonical["SGOV"], Decimal("1"))
+    proposal, prices, bindings = bind_single_leg_proposal("live-buy-1-sgov", bound, canonical)
+    assert proposal.legs[0].client_order_id == deterministic_client_order_id("live-buy-1-sgov", 0)
+    assert proposal.legs[0].reference_price == bound.limit_price
+    assert prices["SGOV"] == bound.valuation_price
     reserved = evaluate_and_reserve(
         store,
         proposal,
@@ -90,6 +96,7 @@ def test_live_paper_mutation_buy_one_sgov(tmp_path: Path) -> None:
         now=now,
         prices=prices,
         price_bindings=bindings,
+        market_data=market,
     )
     if result.blocked:
         pytest.fail(f"execution blocked: {result.block_reason}")

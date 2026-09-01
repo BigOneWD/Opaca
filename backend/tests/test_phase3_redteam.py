@@ -44,6 +44,7 @@ from tests.execution_helpers import (
     sell_qty,
 )
 from tests.helpers import DEFAULT_NOW, DEFAULT_PRICES, phase1_broker_cash
+from tests.market_helpers import market_data_from_bindings
 from tests.state_helpers import order_payload
 
 
@@ -53,6 +54,7 @@ def _execute(
     mutate: PaperMutatingGateway,
     now: datetime = DEFAULT_NOW,
 ) -> ExecutionResult:
+    bindings = bindings_for_proposal(proposal, now=now)
     with freeze_submit_clock(now):
         return execute_reserved_proposal(
             world.store,
@@ -61,7 +63,8 @@ def _execute(
             proposal,
             now=now,
             prices=DEFAULT_PRICES,
-            price_bindings=bindings_for_proposal(proposal, now=now),
+            price_bindings=bindings,
+            market_data=market_data_from_bindings(bindings),
         )
 
 

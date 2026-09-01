@@ -28,18 +28,21 @@ from opaca.broker.gateway import (
 )
 from opaca.broker.paper import ENV_KEY_ID, ENV_SECRET
 from opaca.calendar.us_trading_calendar import US_TRADING_CALENDAR
-from opaca.domain.models import AuthorityResult
+from opaca.domain.models import AuthorityResult, Side
 from opaca.domain.money import ZERO
 from opaca.market.binding import bind_buy, bind_single_leg_proposal
-from opaca.market.errors import MarketDataError
+from opaca.market.errors import MarketDataError, MarketDataUnavailableError
 from opaca.market.limit import DEFAULT_BUY_LIMIT_TOLERANCE
 from opaca.market.quote import (
-    DEFAULT_MAX_QUOTE_AGE_SECONDS,
+    DEFAULT_MAX_QUOTE_FETCH_AGE_SECONDS,
     CanonicalMarketPrice,
-    quote_age_seconds,
+    canonical_prices_for_decision,
+    quote_fetch_age_seconds,
+    quote_source_event_age_seconds,
+    required_pricing_symbols,
     validate_canonical_quote,
 )
-from opaca.market.source import ReadOnlyMarketData, latest_trades
+from opaca.market.source import ReadOnlyMarketData, latest_quotes
 from opaca.orchestration.context import build_policy_context
 from opaca.persistence.demo import PAPER_DEMO_DB_NAME, init_paper_demo_store
 from opaca.persistence.schema import SCHEMA_VERSION
@@ -56,10 +59,13 @@ EXECUTION_NOT_ATTEMPTED = "NOT ATTEMPTED"
 class PreflightReport:
     paper_account: str
     cash: Decimal | None
+    reconciliation: str
+    required_symbols: str
     quote_symbol: str | None
     quote_price: Decimal | None
     quote_timestamp: datetime | None
-    quote_age_seconds: float | None
+    fetch_age_seconds: float | None
+    source_event_age_seconds: float | None
     quote_source: str | None
     limit_price: Decimal | None
     max_buy_notional: Decimal | None
@@ -75,7 +81,12 @@ class PreflightReport:
     def render(self) -> str:
         cash_text = "n/a" if self.cash is None else format(self.cash, "f")
         quote_ts = "n/a" if self.quote_timestamp is None else self.quote_timestamp.isoformat()
-        age = "n/a" if self.quote_age_seconds is None else str(self.quote_age_seconds)
+        fetch_age = "n/a" if self.fetch_age_seconds is None else str(self.fetch_age_seconds)
+        source_age = (
+            "n/a"
+            if self.source_event_age_seconds is None
+            else f"{self.source_event_age_seconds} (diagnostic)"
+        )
         limit_text = "n/a" if self.limit_price is None else format(self.limit_price, "f")
         max_text = "n/a" if self.max_buy_notional is None else format(self.max_buy_notional, "f")
         lines = [
@@ -85,12 +96,23 @@ class PreflightReport:
             "CASH:",
             cash_text,
             "",
+            "RECONCILIATION:",
+            self.reconciliation,
+            "",
+            "REQUIRED SYMBOLS:",
+            self.required_symbols,
+            "",
             "QUOTE:",
             f"symbol {self.quote_symbol or 'n/a'}",
             f"price {self.quote_price if self.quote_price is not None else 'n/a'}",
             f"timestamp {quote_ts}",
-            f"age {age}",
             f"source {self.quote_source or 'n/a'}",
+            "",
+            "FETCH AGE:",
+            fetch_age,
+            "",
+            "SOURCE EVENT AGE:",
+            source_age,
             "",
             "LIMIT:",
             limit_text,
@@ -170,8 +192,11 @@ def _fail(
     db_path: str,
     db_fresh: bool,
     reason: str,
+    reconciliation: str = "n/a",
+    required_symbols: str = "n/a",
     quote: CanonicalMarketPrice | None = None,
-    quote_age: float | None = None,
+    fetch_age: float | None = None,
+    source_event_age: float | None = None,
     limit_price: Decimal | None = None,
     max_buy_notional: Decimal | None = None,
     treasuryguard: str = "REJECT",
@@ -180,10 +205,13 @@ def _fail(
     return PreflightReport(
         paper_account=paper_account,
         cash=cash,
+        reconciliation=reconciliation,
+        required_symbols=required_symbols,
         quote_symbol=None if quote is None else quote.symbol,
         quote_price=None if quote is None else quote.price,
         quote_timestamp=None if quote is None else quote.source_timestamp,
-        quote_age_seconds=quote_age,
+        fetch_age_seconds=fetch_age,
+        source_event_age_seconds=source_event_age,
         quote_source=None if quote is None else quote.source,
         limit_price=limit_price,
         max_buy_notional=max_buy_notional,
@@ -205,7 +233,7 @@ def run_read_only_preflight(
     now: datetime,
     db_path: str | Path,
     overwrite_db: bool = False,
-    max_quote_age_seconds: int = DEFAULT_MAX_QUOTE_AGE_SECONDS,
+    max_fetch_age_seconds: int = DEFAULT_MAX_QUOTE_FETCH_AGE_SECONDS,
     buy_limit_tolerance: Decimal = DEFAULT_BUY_LIMIT_TOLERANCE,
 ) -> PreflightReport:
     """Read-only preflight. Constructs a 1-share SGOV BUY proposal and stops.
@@ -245,34 +273,13 @@ def run_read_only_preflight(
         )
 
     quote: CanonicalMarketPrice | None = None
-    quotes: dict[str, CanonicalMarketPrice]
-    try:
-        quotes = latest_trades(market_data, ASSET_UNIVERSE)
-        quote = quotes["SGOV"]
-        validate_canonical_quote(quote, now=now, max_age_seconds=max_quote_age_seconds)
-        for symbol, item in quotes.items():
-            if symbol == "SGOV":
-                continue
-            validate_canonical_quote(item, now=now, max_age_seconds=max_quote_age_seconds)
-    except MarketDataError as exc:
-        age = None
-        if quote is not None:
-            try:
-                age = quote_age_seconds(quote, now=now)
-            except Exception:
-                age = None
-        return _fail(
-            paper_account=paper_account,
-            cash=cash,
-            db_path=db_path_text,
-            db_fresh=False,
-            reason=str(exc),
-            quote=quote,
-            quote_age=age,
-        )
-
-    bound = bind_buy(quote, Decimal("1"), tolerance=buy_limit_tolerance)
-    age = quote_age_seconds(quote, now=now)
+    bound_limit: Decimal | None = None
+    bound_cash: Decimal | None = None
+    fetch_age: float | None = None
+    source_event_age: float | None = None
+    freshness_now = now
+    reconciliation_text = "n/a"
+    required_text = "n/a"
     store: SQLiteStore | None = None
     db_fresh = not Path(db_path).exists()
     try:
@@ -284,6 +291,7 @@ def run_read_only_preflight(
         )
         db_fresh = True
         recon = reconcile(store, read_gateway, now=now)
+        reconciliation_text = recon.status.value
         if recon.status is not ReconciliationStatus.RECONCILED or recon.snapshot is None:
             return _fail(
                 paper_account=paper_account,
@@ -291,12 +299,33 @@ def run_read_only_preflight(
                 db_path=store.path,
                 db_fresh=db_fresh,
                 reason=f"reconciliation {recon.status.value}",
-                quote=quote,
-                quote_age=age,
-                limit_price=bound.limit_price,
-                max_buy_notional=bound.max_cash_obligation,
+                reconciliation=reconciliation_text,
             )
-        proposal, prices, bindings = bind_single_leg_proposal(PREFLIGHT_PROPOSAL_ID, bound, quotes)
+        required = required_pricing_symbols(("SGOV",), recon.snapshot.positions)
+        required_text = ",".join(required) if required else "n/a"
+        iex_quotes = latest_quotes(market_data, required)
+        freshness_now = now
+        latest_fetch = max(item.fetched_at for item in iex_quotes.values())
+        if latest_fetch > freshness_now:
+            freshness_now = latest_fetch
+        canonical = canonical_prices_for_decision(iex_quotes, side_by_symbol={"SGOV": Side.BUY})
+        if "SGOV" not in canonical:
+            raise MarketDataUnavailableError("no latest quote for SGOV")
+        quote = canonical["SGOV"]
+        for item in canonical.values():
+            validate_canonical_quote(
+                item,
+                now=freshness_now,
+                max_fetch_age_seconds=max_fetch_age_seconds,
+            )
+        bound = bind_buy(quote, Decimal("1"), tolerance=buy_limit_tolerance)
+        bound_limit = bound.limit_price
+        bound_cash = bound.max_cash_obligation
+        fetch_age = quote_fetch_age_seconds(quote, now=freshness_now)
+        source_event_age = quote_source_event_age_seconds(quote, now=freshness_now)
+        proposal, prices, bindings = bind_single_leg_proposal(
+            PREFLIGHT_PROPOSAL_ID, bound, canonical
+        )
         _ = bindings
         context, _snapshot = build_policy_context(
             store,
@@ -316,10 +345,13 @@ def run_read_only_preflight(
         return PreflightReport(
             paper_account=paper_account,
             cash=cash,
+            reconciliation=reconciliation_text,
+            required_symbols=required_text,
             quote_symbol=quote.symbol,
             quote_price=quote.price,
             quote_timestamp=quote.source_timestamp,
-            quote_age_seconds=age,
+            fetch_age_seconds=fetch_age,
+            source_event_age_seconds=source_event_age,
             quote_source=quote.source,
             limit_price=bound.limit_price,
             max_buy_notional=bound.max_cash_obligation,
@@ -332,17 +364,46 @@ def run_read_only_preflight(
             fail_reason=None if tg == "PASS" else "; ".join(decision.reasons),
             ran=True,
         )
+    except MarketDataError as exc:
+        if quote is not None:
+            if fetch_age is None:
+                try:
+                    fetch_age = quote_fetch_age_seconds(quote, now=freshness_now)
+                except Exception:
+                    fetch_age = None
+            if source_event_age is None:
+                try:
+                    source_event_age = quote_source_event_age_seconds(quote, now=freshness_now)
+                except Exception:
+                    source_event_age = None
+        return _fail(
+            paper_account=paper_account,
+            cash=cash,
+            db_path=store.path if store is not None else db_path_text,
+            db_fresh=db_fresh,
+            reason=str(exc),
+            reconciliation=reconciliation_text,
+            required_symbols=required_text,
+            quote=quote,
+            fetch_age=fetch_age,
+            source_event_age=source_event_age,
+            limit_price=bound_limit,
+            max_buy_notional=bound_cash,
+        )
     except Exception as exc:
         return _fail(
             paper_account=paper_account,
             cash=cash,
-            db_path=db_path_text,
-            db_fresh=False,
+            db_path=store.path if store is not None else db_path_text,
+            db_fresh=db_fresh,
             reason=str(exc),
+            reconciliation=reconciliation_text,
+            required_symbols=required_text,
             quote=quote,
-            quote_age=age,
-            limit_price=bound.limit_price,
-            max_buy_notional=bound.max_cash_obligation,
+            fetch_age=fetch_age,
+            source_event_age=source_event_age,
+            limit_price=bound_limit,
+            max_buy_notional=bound_cash,
         )
     finally:
         if store is not None:
@@ -353,10 +414,13 @@ def not_run_report(reason: str, *, db_path: str) -> PreflightReport:
     return PreflightReport(
         paper_account="FAIL",
         cash=None,
+        reconciliation="n/a",
+        required_symbols="n/a",
         quote_symbol=None,
         quote_price=None,
         quote_timestamp=None,
-        quote_age_seconds=None,
+        fetch_age_seconds=None,
+        source_event_age_seconds=None,
         quote_source=None,
         limit_price=None,
         max_buy_notional=None,

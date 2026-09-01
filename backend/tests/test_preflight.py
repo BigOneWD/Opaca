@@ -24,7 +24,7 @@ from opaca.reconciliation.service import reconcile
 
 from tests.execution_helpers import make_world
 from tests.helpers import DEFAULT_NOW
-from tests.market_helpers import universe_quotes
+from tests.market_helpers import universe_iex_quotes
 from tests.state_helpers import paper_gateway
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -34,7 +34,7 @@ PREFLIGHT_SOURCE = BACKEND_ROOT / "opaca" / "preflight.py"
 class TestOfflinePreflight:
     def test_preflight_report_and_zero_mutation(self, tmp_path: Path) -> None:
         db_path = tmp_path / PAPER_DEMO_DB_NAME
-        market = FakeMarketData(quotes=universe_quotes())
+        market = FakeMarketData(quotes=universe_iex_quotes())
         report = run_read_only_preflight(
             paper_gateway(),
             market,
@@ -56,6 +56,16 @@ class TestOfflinePreflight:
         rendered = report.render()
         assert "EXECUTION:" in rendered
         assert "NOT ATTEMPTED" in rendered
+        assert "RECONCILIATION:" in rendered
+        assert "REQUIRED SYMBOLS:" in rendered
+        assert "FETCH AGE:" in rendered
+        assert "SOURCE EVENT AGE:" in rendered
+        assert "(diagnostic)" in rendered
+        assert report.required_symbols == "SGOV"
+        assert report.reconciliation == "RECONCILED"
+        assert report.fetch_age_seconds is not None
+        assert report.source_event_age_seconds is not None
+        assert report.source_event_age_seconds >= 0
         assert not hasattr(report, "authorize")
         assert PREFLIGHT_PROPOSAL_ID not in _proposal_ids(db_path)
 
@@ -69,7 +79,7 @@ class TestOfflinePreflight:
         gateway.account = account
         report = run_read_only_preflight(
             gateway,
-            FakeMarketData(quotes=universe_quotes()),
+            FakeMarketData(quotes=universe_iex_quotes()),
             now=DEFAULT_NOW,
             db_path=tmp_path / PAPER_DEMO_DB_NAME,
         )
@@ -95,7 +105,7 @@ class TestOfflinePreflight:
         existing.close()
         report = run_read_only_preflight(
             paper_gateway(),
-            FakeMarketData(quotes=universe_quotes()),
+            FakeMarketData(quotes=universe_iex_quotes()),
             now=DEFAULT_NOW,
             db_path=db_path,
         )
@@ -107,7 +117,7 @@ class TestOfflinePreflight:
         db_path = tmp_path / PAPER_DEMO_DB_NAME
         report = run_read_only_preflight(
             paper_gateway(),
-            FakeMarketData(quotes=universe_quotes()),
+            FakeMarketData(quotes=universe_iex_quotes()),
             now=DEFAULT_NOW,
             db_path=db_path,
         )

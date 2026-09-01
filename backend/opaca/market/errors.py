@@ -14,11 +14,11 @@ class QuoteValidationError(MarketDataError):
 
 
 class StaleQuoteError(QuoteValidationError):
-    """Quote source timestamp is older than the configured freshness bound."""
+    """Fetch observation or source BBO event is older than its configured bound."""
 
 
 class FutureQuoteError(QuoteValidationError):
-    """Quote source timestamp is in the future. Fail closed."""
+    """Quote fetched_at or source_timestamp is in the future. Fail closed."""
 
 
 class PriceBindingError(MarketDataError):
