@@ -64,8 +64,16 @@ def _parse_iso_date(value: object) -> date:
         raise IntakeBlockedError("due_date must be YYYY-MM-DD") from exc
 
 
-def _candidate_id(source_sha256: str, name: str, amount: Decimal, due_date: date) -> str:
-    material = f"{source_sha256}|{name}|{amount}|{due_date.isoformat()}|CONFIRMED"
+def _candidate_id(
+    source_sha256: str,
+    name: str,
+    amount: Decimal | None,
+    stated_due_date: date | None,
+    certainty: Certainty,
+) -> str:
+    amount_token = "null" if amount is None else str(amount)
+    date_token = "null" if stated_due_date is None else stated_due_date.isoformat()
+    material = f"{source_sha256}|{name}|{amount_token}|{date_token}|{certainty.value}"
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
@@ -75,8 +83,7 @@ def parse_and_validate_extraction(
     *,
     as_of: date,
 ) -> ObligationIntakeResult:
-    """Parse one extraction response and validate the confirmed-obligation path."""
-    del as_of  # Reserved for conservative treatment added by the next TDD step.
+    """Parse one extraction response and conservatively validate obligations."""
     try:
         decoded = json.loads(raw_json)
     except json.JSONDecodeError as exc:
@@ -96,6 +103,8 @@ def parse_and_validate_extraction(
     source_sha256 = hashlib.sha256(normalized_document.encode("utf-8")).hexdigest()
     candidates: list[ValidatedCandidate] = []
     obligations: list[Obligation] = []
+    uncertain_reserved_amount = ZERO
+    block_reasons: list[str] = []
 
     for raw_candidate in raw_candidates:
         if not isinstance(raw_candidate, dict):
@@ -106,44 +115,86 @@ def parse_and_validate_extraction(
         name = _require_non_empty_string(candidate["name"], "name")
         if candidate["currency"] != "USD":
             raise IntakeBlockedError("currency must be USD")
-        if candidate["certainty"] != Certainty.CONFIRMED.value:
-            raise IntakeBlockedError("only CONFIRMED is supported by this validation step")
-        if candidate["uncertainty_reason"] is not None:
-            raise IntakeBlockedError("confirmed candidate cannot have uncertainty_reason")
+        try:
+            certainty = Certainty(candidate["certainty"])
+        except (TypeError, ValueError) as exc:
+            raise IntakeBlockedError("certainty must be CONFIRMED or UNCERTAIN") from exc
+
         source_excerpt = _require_non_empty_string(candidate["source_excerpt"], "source_excerpt")
         if _normalized_newlines(source_excerpt) not in normalized_document:
             raise IntakeBlockedError("MODEL_EVIDENCE_MISMATCH")
 
-        amount = _parse_positive_decimal(candidate["amount"])
-        due_date = _parse_iso_date(candidate["due_date"])
-        obligation = Obligation(
-            obligation_id=_candidate_id(source_sha256, name, amount, due_date),
-            name=name,
-            amount=amount,
-            due_date=due_date,
+        if certainty is Certainty.CONFIRMED:
+            if candidate["uncertainty_reason"] is not None:
+                raise IntakeBlockedError("confirmed candidate cannot have uncertainty_reason")
+            amount = _parse_positive_decimal(candidate["amount"])
+            stated_due_date = _parse_iso_date(candidate["due_date"])
+            effective_due_date = stated_due_date
+            reserved_conservatively = False
+        else:
+            uncertainty_reason = _require_non_empty_string(
+                candidate["uncertainty_reason"], "uncertainty_reason"
+            )
+            amount = (
+                None
+                if candidate["amount"] is None
+                else _parse_positive_decimal(candidate["amount"])
+            )
+            stated_due_date = (
+                None if candidate["due_date"] is None else _parse_iso_date(candidate["due_date"])
+            )
+            effective_due_date = as_of if amount is not None else None
+            reserved_conservatively = amount is not None
+
+        candidate_id = _candidate_id(
+            source_sha256,
+            name,
+            amount,
+            stated_due_date,
+            certainty,
         )
         validated = ValidatedCandidate(
-            candidate_id=obligation.obligation_id,
+            candidate_id=candidate_id,
             name=name,
             amount=amount,
-            stated_due_date=due_date,
-            effective_due_date=due_date,
-            certainty=Certainty.CONFIRMED,
-            uncertainty_reason=None,
+            stated_due_date=stated_due_date,
+            effective_due_date=effective_due_date,
+            certainty=certainty,
+            uncertainty_reason=(
+                None
+                if certainty is Certainty.CONFIRMED
+                else _require_non_empty_string(candidate["uncertainty_reason"], "uncertainty_reason")
+            ),
             source_excerpt=source_excerpt,
             source_sha256=source_sha256,
-            reserved_conservatively=False,
+            reserved_conservatively=reserved_conservatively,
         )
         candidates.append(validated)
+
+        if amount is None:
+            if "UNQUANTIFIED_OBLIGATION" not in block_reasons:
+                block_reasons.append("UNQUANTIFIED_OBLIGATION")
+            continue
+
+        if effective_due_date is None:
+            raise IntakeBlockedError("effective due date missing for quantified obligation")
+        obligation = Obligation(
+            obligation_id=candidate_id,
+            name=name,
+            amount=amount,
+            due_date=effective_due_date,
+        )
         obligations.append(obligation)
+        if reserved_conservatively:
+            uncertain_reserved_amount += amount
 
     return ObligationIntakeResult(
         source_sha256=source_sha256,
         candidates=tuple(candidates),
         effective_obligations=tuple(obligations),
-        uncertain_reserved_amount=ZERO,
-        trade_blocked=False,
-        block_reasons=(),
+        uncertain_reserved_amount=uncertain_reserved_amount,
+        trade_blocked=bool(block_reasons),
+        block_reasons=tuple(block_reasons),
     )
 
 
