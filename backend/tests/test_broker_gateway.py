@@ -180,10 +180,153 @@ class TestAdapters:
         with pytest.raises(InvalidBrokerStateError):
             adapt_order_snapshot(order_payload("abc", qty="10", filled_qty="50"))
 
+    def test_real_alpaca_order_enums_are_adapted(self) -> None:
+        from alpaca.trading.enums import OrderSide, OrderStatus
+
+        record = adapt_order_snapshot(
+            {
+                "id": "2cc3948e-c36a-4f61-8d30-6963a8d543ff",
+                "client_order_id": "opaca-38f63d11f149c3e17c4f34df48e9dc8d",
+                "symbol": "SGOV",
+                "side": OrderSide.BUY,
+                "status": OrderStatus.FILLED,
+                "qty": "1",
+                "filled_qty": "1",
+            }
+        )
+
+        assert record.side == "BUY"
+        assert record.alpaca_status == "filled"
+        assert record.mapped_state == OrderState.FILLED.value
+
+        payload = order_payload("new")
+        payload["side"] = OrderSide.SELL
+        payload["status"] = OrderStatus.NEW
+        new_record = adapt_order_snapshot(payload)
+        assert new_record.side == "SELL"
+        assert new_record.alpaca_status == "new"
+        assert new_record.mapped_state == OrderState.NEW.value
+
+    @pytest.mark.parametrize(
+        ("side", "status", "expected_side", "expected_status", "expected_state"),
+        [
+            ("buy", "filled", "BUY", "filled", OrderState.FILLED.value),
+            ("BUY", "FILLED", "BUY", "filled", OrderState.FILLED.value),
+            ("sell", "new", "SELL", "new", OrderState.NEW.value),
+            ("SELL", "NEW", "SELL", "new", OrderState.NEW.value),
+        ],
+    )
+    def test_plain_order_tokens_are_normalized(
+        self,
+        side: str,
+        status: str,
+        expected_side: str,
+        expected_status: str,
+        expected_state: str,
+    ) -> None:
+        record = adapt_order_snapshot(order_payload("plain", side=side, status=status))
+
+        assert record.side == expected_side
+        assert record.alpaca_status == expected_status
+        assert record.mapped_state == expected_state
+
+    @pytest.mark.parametrize("side", ["OrderSide.BUY", "foo.buy", "not_buy", "", None, object()])
+    def test_invalid_order_side_fails_closed(self, side: object) -> None:
+        payload = order_payload("bad-side")
+        payload["side"] = side
+
+        with pytest.raises(InvalidBrokerStateError):
+            adapt_order_snapshot(payload)
+
+    @pytest.mark.parametrize("status", ["OrderStatus.FILLED", "foo.filled", "not_filled"])
+    def test_unknown_order_status_stays_unknown(self, status: str) -> None:
+        payload = order_payload("unknown-status")
+        payload["status"] = status
+
+        record = adapt_order_snapshot(payload)
+        assert record.mapped_state == OrderState.UNKNOWN.value
+        assert record.alpaca_status == status.lower()
+
+    @pytest.mark.parametrize("status", ["", None, object()])
+    def test_invalid_order_status_fails_closed(self, status: object) -> None:
+        payload = order_payload("invalid-status")
+        payload["status"] = status
+
+        with pytest.raises(InvalidBrokerStateError):
+            adapt_order_snapshot(payload)
+
+    @pytest.mark.parametrize("field", ["side", "status"])
+    def test_missing_order_enum_field_fails_closed(self, field: str) -> None:
+        payload = order_payload("missing-field")
+        del payload[field]
+
+        with pytest.raises(InvalidBrokerStateError):
+            adapt_order_snapshot(payload)
+
     def test_position_preserves_quantity_available(self) -> None:
         position = adapt_position(position_payload(qty="100", qty_available="40"))
         assert position.quantity == Decimal("100")
         assert position.quantity_available == Decimal("40")
+
+    def test_real_alpaca_long_position_enum_is_adapted(self) -> None:
+        from alpaca.trading.enums import PositionSide
+
+        position = adapt_position(
+            {
+                "symbol": "SGOV",
+                "side": PositionSide.LONG,
+                "qty": "1",
+                "qty_available": "1",
+                "market_value": "100.4023",
+            }
+        )
+
+        assert position.symbol == "SGOV"
+        assert position.quantity == Decimal("1")
+        assert position.quantity_available == Decimal("1")
+        assert position.market_value == Decimal("100.4023")
+
+    def test_alpaca_short_position_enum_fails_closed(self) -> None:
+        from alpaca.trading.enums import PositionSide
+
+        payload = position_payload(qty="1", qty_available="1", market_value="100.4023")
+        payload["side"] = PositionSide.SHORT
+
+        with pytest.raises(InvalidBrokerStateError):
+            adapt_position(payload)
+
+    @pytest.mark.parametrize(
+        "side",
+        [
+            "short",
+            "SHORT",
+            "PositionSide.LONG",
+            "foo.long",
+            "not_long",
+            AssetStatus.ACTIVE,
+            object(),
+        ],
+    )
+    def test_invalid_supplied_position_side_fails_closed(self, side: object) -> None:
+        payload = position_payload(qty="1", qty_available="1", market_value="100.4023")
+        payload["side"] = side
+
+        with pytest.raises(InvalidBrokerStateError):
+            adapt_position(payload)
+
+    def test_missing_position_side_remains_optional(self) -> None:
+        payload = position_payload(qty="1", qty_available="1", market_value="100.4023")
+        del payload["side"]
+
+        position = adapt_position(payload)
+        assert position.quantity == Decimal("1")
+
+    def test_none_position_side_remains_optional(self) -> None:
+        payload = position_payload(qty="1", qty_available="1", market_value="100.4023")
+        payload["side"] = None
+
+        position = adapt_position(payload)
+        assert position.quantity == Decimal("1")
 
 
 class _EnumLike:

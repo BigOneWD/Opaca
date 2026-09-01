@@ -197,7 +197,8 @@ def adapt_position(raw: object) -> Position:
     if not symbol:
         raise InvalidBrokerStateError("position symbol is empty")
     side = data.get("side")
-    if side is not None and str(side).lower() not in {"long", ""}:
+    side_token = _normalize_broker_enum_token(side) if side is not None else None
+    if side is not None and side_token != "long":
         raise InvalidBrokerStateError(f"short/non-long position {symbol} is invalid for Opaca")
     qty_key = "qty" if "qty" in data else "quantity"
     available_key = "qty_available" if "qty_available" in data else "quantity_available"
@@ -247,12 +248,16 @@ def adapt_order_snapshot(raw: object) -> OrderSnapshotRecord:
     if not client_order_id:
         raise InvalidBrokerStateError("order missing client_order_id")
     symbol = str(_require_field(data, "symbol"))
-    side_raw = str(_require_field(data, "side")).upper()
+    side_token = _normalize_broker_enum_token(_require_field(data, "side"))
+    if side_token is None:
+        raise InvalidBrokerStateError("malformed order side")
     try:
-        Side(side_raw)
+        side = Side(side_token.upper())
     except ValueError as exc:
-        raise InvalidBrokerStateError(f"malformed order side {side_raw!r}") from exc
-    status = str(_require_field(data, "status")).lower()
+        raise InvalidBrokerStateError(f"malformed order side {side_token!r}") from exc
+    status = _normalize_broker_enum_token(_require_field(data, "status"))
+    if status is None:
+        raise InvalidBrokerStateError("malformed order status")
     mapped = map_order_status(status)
     qty = parse_optional_decimal(data, "qty")
     if qty is None:
@@ -267,7 +272,7 @@ def adapt_order_snapshot(raw: object) -> OrderSnapshotRecord:
         client_order_id=client_order_id,
         broker_order_id=None if broker_id is None else str(broker_id),
         symbol=symbol,
-        side=side_raw,
+        side=side.value,
         alpaca_status=status,
         mapped_state=mapped.value,
         quantity=qty,
