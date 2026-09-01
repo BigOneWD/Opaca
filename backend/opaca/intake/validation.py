@@ -130,6 +130,9 @@ def parse_and_validate_extraction(
         if _normalized_newlines(source_excerpt) not in normalized_document:
             raise IntakeBlockedError("MODEL_EVIDENCE_MISMATCH")
 
+        amount: Decimal | None
+        stated_due_date: date | None
+        effective_due_date: date | None
         uncertainty_reason: str | None
         if certainty is Certainty.CONFIRMED:
             if candidate["uncertainty_reason"] is not None:
