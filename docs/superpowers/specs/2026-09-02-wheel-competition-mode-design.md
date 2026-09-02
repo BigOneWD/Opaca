@@ -15,7 +15,7 @@ Product thesis:
 - **Capital is fully investable. Risk is not fully delegated.**
 - **The AI can repair its idea. It cannot repair the policy.**
 
-Competition capital is the cash/equity already present in the dedicated Alpaca paper account. Corporate payroll, vendor obligations, and operating reserve are not subtracted in Competition Mode. Broker `buying_power` must never enlarge Opaca's internal capital authority.
+Competition capital is the reconciled cash already present in the dedicated Alpaca paper account. Corporate payroll, vendor obligations, and operating reserve are not subtracted in Competition Mode. Broker `buying_power`, `options_buying_power`, and equity are diagnostics for V1 and must never enlarge Opaca's internal capital authority.
 
 ## 2. Scope
 
@@ -107,7 +107,7 @@ The existing ETF/treasury execution path remains frozen and continues to use its
 
 Alpaca MCP is an observation/tool surface only. The AI must not receive mutation tools.
 
-Allowed MCP capabilities should be limited to the minimum read-only toolsets needed for:
+Allowed MCP capabilities must be limited to the minimum read-only toolsets needed for:
 
 - permitted asset discovery;
 - stock market data;
@@ -159,7 +159,7 @@ An intent outside the permitted underlying whitelist fails validation.
 
 ## 6. AI Repair Loop
 
-A policy rejection may be returned to the AI as structured feedback containing only the violated checks and authoritative arithmetic.
+A policy rejection may be returned to the AI as structured feedback containing only violated checks and authoritative arithmetic.
 
 Example:
 
@@ -183,9 +183,7 @@ The AI may produce at most one repair intent.
 MAX_AGENT_ATTEMPTS = 2
 ```
 
-Attempt 1 = initial proposal. Attempt 2 = one repair.
-
-A second rejection terminates with no broker mutation.
+Attempt 1 is the initial proposal. Attempt 2 is one repair. A second rejection terminates with no broker mutation.
 
 The AI may never modify policy limits, capital, whitelist, multiplier, broker truth, or a hard `REJECT` result.
 
@@ -195,7 +193,7 @@ Use a tiny explicit whitelist, initially 3–5 liquid names that have active opt
 
 Do not implement a market-wide scanner.
 
-The whitelist is configuration/policy, not AI-controlled.
+The whitelist is policy, not AI-controlled. Final V1 symbols must be selected only after a read-only market/options probe verifies that usable contracts exist under the current assignment-capital limit.
 
 ## 8. Deterministic CSP Contract Selector
 
@@ -206,30 +204,40 @@ V1 selector requirements:
 1. Underlying must be permitted.
 2. Contract must be a PUT.
 3. Contract must be active/tradable and unexpired.
-4. Expiration must fall within the configured short-DTE range.
+4. DTE must be between 0 and 7 calendar days inclusive at selection time.
 5. Strike must be less than or equal to `willing_to_own_at_or_below`.
 6. Multiplier must be read from contract metadata and be positive; never hardcode `100` as authoritative.
-7. Authoritative option quote must be fresh.
+7. Authoritative option quote must be fetched no more than 15 seconds before policy evaluation; a future source timestamp is invalid.
 8. Bid must be positive and ask must not be below bid.
 9. V1 opening quantity is exactly one contract.
-10. Among otherwise eligible contracts, choose the strike closest to the AI ownership price without exceeding it; tie-breaking must be deterministic.
+10. Choose the eligible strike closest to the AI ownership price without exceeding it; then choose the earliest eligible expiration; final tie-break is lexical OCC symbol order.
+11. V1 sell limit premium is the fresh authoritative bid. If that price is not broker-valid, fail closed rather than silently reprice.
 
 The selector must not silently choose a safer strike merely to make policy pass. If the selected contract violates policy, WheelGuard rejects it and the AI may use its single repair attempt.
 
 ## 9. Capital Model
 
-Competition Mode treats reconciled account cash/equity as the capital base. Broker buying power is diagnostic only and cannot enlarge Opaca's internal authority.
-
-Open CSPs create contingent assignment commitments that Alpaca may not immediately subtract from `cash`, so Opaca must maintain internal assignment-capital reservations.
+V1 uses one unambiguous internal capital base:
 
 ```text
-available_capital
-= reconciled_cash
-- active_assignment_commitments
-- pending_CSP_reservations
+capital_base = reconciled_cash
 ```
 
-`options_buying_power` may be read only as a broker feasibility/collateral diagnostic. If Opaca's internal model says a trade is feasible but broker collateral diagnostics disagree, fail closed.
+Broker equity, `buying_power`, and `options_buying_power` are diagnostics only. They cannot enlarge internal authority.
+
+Every pending/open CSP assignment commitment is represented by one ACTIVE `CASH_DEPLOYMENT` reservation. Therefore:
+
+```text
+active_assignment_commitment
+= sum(ACTIVE CSP CASH_DEPLOYMENT reservation amounts)
+
+available_capital
+= reconciled_cash - active_assignment_commitment
+```
+
+The same commitment must not be represented twice. Pending and filled/open CSP exposure use the same reservation lifecycle.
+
+`options_buying_power` may be read as a broker feasibility/collateral diagnostic. If Opaca's internal model says a trade is feasible but broker collateral diagnostics disagree, fail closed.
 
 ## 10. CSP Risk Arithmetic
 
@@ -250,20 +258,27 @@ Premium may be used for economics/reporting, e.g. adjusted entry cost, but not t
 
 ```text
 max_assignment_per_underlying
-= 25% × reconciled capital base
+= 25% × reconciled_cash
 ```
 
-For a $100,000 capital base, the hard maximum is $25,000 per underlying.
+At $100,000 reconciled cash, the hard maximum is $25,000 per underlying.
+
+The per-underlying calculation includes existing ACTIVE assignment reservations for that underlying plus the proposed assignment commitment.
 
 ### Aggregate solvency
 
-A proposed CSP must satisfy all of:
+A proposed CSP must satisfy both:
 
 ```text
-existing commitments + proposed commitment <= reconciled capital
-proposed commitment <= internally available capital
-broker collateral diagnostics do not contradict feasibility
+active_assignment_commitment + proposed_assignment_capital <= reconciled_cash
+proposed_assignment_capital <= available_capital
 ```
+
+These are equivalent under a consistent reservation ledger and are both checked for audit clarity.
+
+### Broker feasibility
+
+Broker collateral diagnostics must not contradict internal feasibility. Broker buying power must never be used to increase Opaca's limit.
 
 ### Other hard checks
 
@@ -288,28 +303,28 @@ Use the existing three-state authority semantics.
 For a policy-valid CSP:
 
 ```text
-assignment_capital <= 10% of reconciled capital
+assignment_capital <= 10% of reconciled_cash
     => AUTO
 
-assignment_capital > 10% and <= 25%
+assignment_capital > 10% and <= 25% of reconciled_cash
     => APPROVAL_REQUIRED
 
-assignment_capital > 25%
+assignment_capital > 25% of reconciled_cash
     => REJECT at hard policy stage
 ```
 
-For initial $100,000 capital:
+At $100,000 reconciled cash:
 
 ```text
 <= $10,000       AUTO
-$10,000–$25,000 APPROVAL_REQUIRED
+> $10,000–$25,000 APPROVAL_REQUIRED
 > $25,000        REJECT
 ```
 
 Existing semantics remain mandatory:
 
 - `REJECT` is never promoted by human approval.
-- Human approval may only promote `APPROVAL_REQUIRED`, followed by fresh reconciliation/policy re-evaluation before submission.
+- Human approval may only promote `APPROVAL_REQUIRED`, followed by fresh reconciliation, fresh contract/quote validation, and fresh policy evaluation before submission.
 
 ## 13. Domain Boundary
 
@@ -373,7 +388,7 @@ Do not create a parallel `OptionRiskAssessment` rendering/persistence system.
 
 WheelGuard must emit the existing policy-result style (`PolicyDecision` / `PolicyCheckResult` / `CheckId`) with option-specific checks.
 
-Proposed V1 option checks:
+V1 option checks:
 
 ```text
 CHECK-17 WHEEL_STATE
@@ -407,9 +422,9 @@ The existing paper-endpoint structural verification, kill switch, deterministic 
 
 ## 16. Reservation Lifecycle
 
-Before option mutation, create an active assignment-capital reservation under a `BEGIN IMMEDIATE` transaction.
+Before option mutation, create an ACTIVE assignment-capital reservation under a `BEGIN IMMEDIATE` transaction.
 
-For a $160 strike, 100 multiplier, 1-contract CSP:
+For a $160 strike, 100 multiplier, one-contract CSP:
 
 ```text
 reservation kind = CASH_DEPLOYMENT
@@ -421,7 +436,7 @@ status = ACTIVE
 Lifecycle:
 
 ```text
-CSP order open/filled -> reservation ACTIVE
+CSP pending/open/filled -> reservation ACTIVE
 put expires worthless -> reservation RELEASED
 put assigned -> reservation RELEASED once the contingent obligation becomes actual broker cash/share state
 ```
@@ -432,9 +447,9 @@ Never release collateral solely because a submission call timed out.
 
 ## 17. Persistence Isolation
 
-Use a fresh Competition Wheel database rather than upgrading/overwriting the existing verified treasury/equity persisted state in place.
+Use a fresh Competition Wheel database rather than upgrading or overwriting the existing verified treasury/equity persisted state in place.
 
-Example conceptual file:
+Conceptual file:
 
 ```text
 opaca-wheel-paper.db
@@ -526,7 +541,7 @@ Examples:
 - more than one plausible expiry/assignment hypothesis;
 - later broker activity contradicts the inferred transition.
 
-If the uncertainty affects global cash, aggregate collateral, broker availability, or account-wide reconciliation, block all new Wheel opening trades.
+If uncertainty affects global cash, aggregate collateral, broker availability, or account-wide reconciliation, block all new Wheel opening trades.
 
 Do not silently rewrite historical state after contradictory broker evidence.
 
@@ -588,7 +603,7 @@ AI uses read-only Alpaca MCP context
 -> assignment exposure = $16,000
 -> hard policy PASS
 -> authority decision
--> if approval needed, approve then revalidate
+-> if approval needed, approve then fully revalidate
 -> alpaca-py PAPER submission
 -> real broker fill/read-back
 -> SHORT_PUT_OPEN reconciled
@@ -609,7 +624,7 @@ CLI must remain outside the runtime mutation path.
 
 All production changes follow strict TDD:
 
-1. Write focused failing test.
+1. Write a focused failing test.
 2. Run it and observe the expected RED failure.
 3. Implement the minimum production change.
 4. Re-run and observe GREEN.
