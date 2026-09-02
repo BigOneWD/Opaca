@@ -105,7 +105,8 @@ def test_unquantified_obligation_blocks_downstream_use() -> None:
 
     assert result.trade_blocked is True
     assert "UNQUANTIFIED_OBLIGATION" in result.block_reasons
-    assert result.effective_obligations == ()
+    with pytest.raises(IntakeBlockedError, match="UNQUANTIFIED_OBLIGATION"):
+        _ = result.effective_obligations
 
 
 def test_zero_candidates_never_becomes_safe_empty_obligations() -> None:
