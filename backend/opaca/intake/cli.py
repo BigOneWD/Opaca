@@ -100,5 +100,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     out.write(f"\nUNCERTAIN RESERVED AMOUNT: {result.uncertain_reserved_amount}\n")
     out.write(f"TRADE BLOCKED: {'YES' if result.trade_blocked else 'NO'}\n")
+    for reason in result.block_reasons:
+        out.write(f"BLOCK REASON: {reason}\n")
     _write_no_mutation_notice()
     return 0
