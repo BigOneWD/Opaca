@@ -10,6 +10,10 @@ from enum import StrEnum
 from opaca.domain.models import Obligation
 
 
+class IntakeBlockedError(RuntimeError):
+    """Raised when intake output is unsafe for downstream treasury use."""
+
+
 class Certainty(StrEnum):
     CONFIRMED = "CONFIRMED"
     UNCERTAIN = "UNCERTAIN"
@@ -33,7 +37,14 @@ class ValidatedCandidate:
 class ObligationIntakeResult:
     source_sha256: str
     candidates: tuple[ValidatedCandidate, ...]
-    effective_obligations: tuple[Obligation, ...]
+    _effective_obligations: tuple[Obligation, ...]
     uncertain_reserved_amount: Decimal
     trade_blocked: bool
     block_reasons: tuple[str, ...]
+
+    @property
+    def effective_obligations(self) -> tuple[Obligation, ...]:
+        if self.trade_blocked:
+            reasons = ", ".join(self.block_reasons)
+            raise IntakeBlockedError(f"intake blocked: {reasons}")
+        return self._effective_obligations
