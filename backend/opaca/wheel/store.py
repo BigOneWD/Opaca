@@ -13,6 +13,7 @@ from pathlib import Path
 
 from opaca.domain.money import positive_money
 from opaca.persistence.codec import dump_datetime, dump_decimal, load_decimal
+from opaca.wheel.models import WheelShareLot
 
 
 class WheelPersistenceError(RuntimeError):
@@ -40,6 +41,7 @@ class WheelReservation:
     underlying: str
     amount: Decimal
     status: str
+    kind: str = "CASH_DEPLOYMENT"
 
 
 @dataclass(frozen=True)
@@ -76,7 +78,8 @@ _SCHEMA_STATEMENTS = (
         reservation_id TEXT PRIMARY KEY,
         underlying TEXT NOT NULL,
         amount TEXT NOT NULL,
-        status TEXT NOT NULL
+        status TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'CASH_DEPLOYMENT'
     )
     """,
     """
@@ -84,7 +87,8 @@ _SCHEMA_STATEMENTS = (
         lot_id TEXT PRIMARY KEY,
         underlying TEXT NOT NULL,
         shares TEXT NOT NULL,
-        cost_basis TEXT NOT NULL
+        cost_basis TEXT NOT NULL,
+        market_value TEXT NOT NULL DEFAULT '0'
     )
     """,
     """
@@ -144,6 +148,18 @@ class WheelStore:
         with self.begin_immediate() as connection:
             for statement in _SCHEMA_STATEMENTS:
                 connection.execute(statement)
+            self._ensure_column(
+                connection,
+                "wheel_reservations",
+                "kind",
+                "TEXT NOT NULL DEFAULT 'CASH_DEPLOYMENT'",
+            )
+            self._ensure_column(
+                connection,
+                "wheel_share_lots",
+                "market_value",
+                "TEXT NOT NULL DEFAULT '0'",
+            )
 
     def close(self) -> None:
         self._conn.close()
@@ -222,9 +238,9 @@ class WheelStore:
     def active_assignment_reservations(self) -> list[WheelReservation]:
         """Return active assignment reservations from this Wheel database."""
         rows = self._conn.execute(
-            "SELECT reservation_id, underlying, amount, status "
-            "FROM wheel_reservations WHERE status = ? ORDER BY reservation_id",
-            ("ACTIVE",),
+            "SELECT reservation_id, underlying, amount, status, kind "
+            "FROM wheel_reservations WHERE status = ? AND kind = ? ORDER BY reservation_id",
+            ("ACTIVE", "CASH_DEPLOYMENT"),
         ).fetchall()
         return [
             WheelReservation(
@@ -232,6 +248,150 @@ class WheelStore:
                 underlying=str(row["underlying"]),
                 amount=load_decimal(str(row["amount"])),
                 status=str(row["status"]),
+                kind=str(row["kind"]),
+            )
+            for row in rows
+        ]
+
+    def reserve_assignment(
+        self,
+        *,
+        reservation_id: str,
+        underlying: str,
+        amount: Decimal,
+        now: datetime,
+    ) -> WheelReservation:
+        """Create one idempotent ACTIVE cash-deployment reservation."""
+        if not reservation_id.strip() or not underlying.strip():
+            raise ValueError("reservation identity must be non-empty")
+        capital = positive_money(amount)
+        dump_datetime(now)
+        with self.begin_immediate() as connection:
+            existing = connection.execute(
+                "SELECT reservation_id, underlying, amount, status, kind "
+                "FROM wheel_reservations WHERE reservation_id = ?",
+                (reservation_id,),
+            ).fetchone()
+            if existing is not None:
+                existing_amount = load_decimal(str(existing["amount"]))
+                if (
+                    str(existing["underlying"]) != underlying
+                    or existing_amount != capital
+                    or str(existing["kind"]) != "CASH_DEPLOYMENT"
+                ):
+                    raise WheelPersistenceError("reservation identity is already bound")
+                if str(existing["status"]) != "ACTIVE":
+                    raise WheelPersistenceError("reservation is not active")
+                return WheelReservation(
+                    reservation_id=str(existing["reservation_id"]),
+                    underlying=str(existing["underlying"]),
+                    amount=existing_amount,
+                    status=str(existing["status"]),
+                    kind=str(existing["kind"]),
+                )
+            connection.execute(
+                "INSERT INTO wheel_reservations "
+                "(reservation_id, underlying, amount, status, kind) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (reservation_id, underlying, dump_decimal(capital), "ACTIVE", "CASH_DEPLOYMENT"),
+            )
+        return WheelReservation(
+            reservation_id=reservation_id,
+            underlying=underlying,
+            amount=capital,
+            status="ACTIVE",
+        )
+
+    def release_assignment_if_proven_no_exposure(
+        self,
+        reservation_id: str,
+        *,
+        proven: bool,
+        now: datetime,
+    ) -> bool:
+        """Release only when a caller supplies a positive no-exposure proof."""
+        dump_datetime(now)
+        if not proven:
+            return False
+        with self.begin_immediate() as connection:
+            cursor = connection.execute(
+                "UPDATE wheel_reservations SET status = ? "
+                "WHERE reservation_id = ? AND kind = ? AND status = ?",
+                ("RELEASED", reservation_id, "CASH_DEPLOYMENT", "ACTIVE"),
+            )
+            return cursor.rowcount == 1
+
+    def convert_assignment_to_share_lot(
+        self,
+        *,
+        reservation_id: str,
+        lot_id: str,
+        underlying: str,
+        shares: int,
+        assignment_basis: Decimal,
+        market_value: Decimal,
+        now: datetime,
+    ) -> None:
+        """Atomically persist assigned shares before releasing their reservation."""
+        lot = WheelShareLot(
+            underlying=underlying,
+            shares=shares,
+            assignment_basis=assignment_basis,
+            market_value=market_value,
+        )
+        dump_datetime(now)
+        basis = lot.assignment_basis.quantize(Decimal("0.01"))
+        if basis != lot.assignment_basis:
+            raise ValueError("assignment basis must be cent-exact")
+        with self.begin_immediate() as connection:
+            reservation = connection.execute(
+                "SELECT underlying, status, kind FROM wheel_reservations "
+                "WHERE reservation_id = ?",
+                (reservation_id,),
+            ).fetchone()
+            if reservation is None:
+                raise WheelPersistenceError("assignment reservation is missing")
+            if (
+                str(reservation["underlying"]) != lot.underlying
+                or str(reservation["status"]) != "ACTIVE"
+                or str(reservation["kind"]) != "CASH_DEPLOYMENT"
+            ):
+                raise WheelPersistenceError("assignment reservation is not active")
+            connection.execute(
+                "INSERT INTO wheel_share_lots "
+                "(lot_id, underlying, shares, cost_basis, market_value) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(lot_id) DO UPDATE SET "
+                "underlying = excluded.underlying, shares = excluded.shares, "
+                "cost_basis = excluded.cost_basis, market_value = excluded.market_value",
+                (
+                    lot_id,
+                    lot.underlying,
+                    str(lot.shares),
+                    format(basis, "f"),
+                    dump_decimal(lot.market_value),
+                ),
+            )
+            cursor = connection.execute(
+                "UPDATE wheel_reservations SET status = ? "
+                "WHERE reservation_id = ? AND status = ?",
+                ("RELEASED", reservation_id, "ACTIVE"),
+            )
+            if cursor.rowcount != 1:
+                raise WheelPersistenceError("assignment reservation release failed")
+
+    def share_lots(self) -> list[WheelShareLot]:
+        """Load attributable Wheel share lots for exposure calculation."""
+        rows = self._conn.execute(
+            "SELECT underlying, shares, cost_basis, market_value "
+            "FROM wheel_share_lots ORDER BY lot_id"
+        ).fetchall()
+        return [
+            WheelShareLot(
+                underlying=str(row["underlying"]),
+                shares=int(str(row["shares"])),
+                assignment_basis=load_decimal(str(row["cost_basis"])),
+                market_value=load_decimal(str(row["market_value"])),
             )
             for row in rows
         ]
@@ -242,3 +402,14 @@ class WheelStore:
         if row is None:
             return None
         return str(row["value"])
+
+    @staticmethod
+    def _ensure_column(
+        connection: sqlite3.Connection,
+        table: str,
+        column: str,
+        definition: str,
+    ) -> None:
+        columns = connection.execute(f"PRAGMA table_info({table})").fetchall()
+        if column not in {str(row[1]) for row in columns}:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
