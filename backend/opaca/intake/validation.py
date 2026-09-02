@@ -11,7 +11,12 @@ from typing import cast
 
 from opaca.domain.models import Obligation
 from opaca.domain.money import ZERO
-from opaca.intake.models import Certainty, ObligationIntakeResult, ValidatedCandidate
+from opaca.intake.models import (
+    Certainty,
+    IntakeBlockedError,
+    ObligationIntakeResult,
+    ValidatedCandidate,
+)
 
 _TOP_LEVEL_KEYS = {"document_summary", "candidates"}
 _CANDIDATE_KEYS = {
@@ -46,10 +51,6 @@ _MONTHS = {
     "November": 11,
     "December": 12,
 }
-
-
-class IntakeBlockedError(RuntimeError):
-    """Raised when intake output is unsafe for downstream treasury use."""
 
 
 def _normalized_newlines(value: str) -> str:
@@ -276,7 +277,7 @@ def parse_and_validate_extraction(
     return ObligationIntakeResult(
         source_sha256=source_sha256,
         candidates=tuple(candidates),
-        effective_obligations=tuple(obligations),
+        _effective_obligations=tuple(obligations),
         uncertain_reserved_amount=uncertain_reserved_amount,
         trade_blocked=bool(block_reasons),
         block_reasons=tuple(block_reasons),
@@ -284,7 +285,4 @@ def parse_and_validate_extraction(
 
 
 def require_effective_obligations(result: ObligationIntakeResult) -> tuple[Obligation, ...]:
-    if result.trade_blocked:
-        reasons = ", ".join(result.block_reasons)
-        raise IntakeBlockedError(f"intake blocked: {reasons}")
     return result.effective_obligations
