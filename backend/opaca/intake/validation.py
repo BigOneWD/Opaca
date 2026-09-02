@@ -43,6 +43,14 @@ _LONG_DATE_ANCHOR_RE = re.compile(
     r"(?P<month>January|February|March|April|May|June|July|August|September|October|November|December)"
     r"[ \t]+(?P<year>\d{4})(?!\d)"
 )
+_DUE_DATE_PREFIX_RE = re.compile(
+    r"(?:\b(?:due|payable)(?:[ \t]+date)?[ \t]*(?:is[ \t]*)?"
+    r"(?:on|by)?[ \t]*:?[ \t]*"
+    r"|\bpayment[ \t]+(?:is[ \t]+)?due[ \t]*(?:on|by)?[ \t]*:?[ \t]*"
+    r"|\bpayment[ \t]+date[ \t]*:?[ \t]*)$",
+    re.IGNORECASE,
+)
+_DATE_LIST_CONNECTOR_RE = re.compile(r"(?:,|\b(?:or|and)\b)[ \t]*$", re.IGNORECASE)
 _MONTHS = {
     "January": 1,
     "February": 2,
@@ -138,24 +146,49 @@ def _evidence_amounts(source_excerpt: str) -> set[Decimal]:
     return amounts
 
 
-def _evidence_dates(source_excerpt: str) -> set[date]:
-    dates: set[date] = set()
+def _date_anchors(source_excerpt: str) -> list[tuple[date, int]]:
+    anchors: list[tuple[date, int]] = []
     for match in _ISO_DATE_ANCHOR_RE.finditer(source_excerpt):
         try:
-            dates.add(date.fromisoformat(match.group("value")))
+            anchors.append((date.fromisoformat(match.group("value")), match.start()))
         except ValueError:
             continue
     for match in _LONG_DATE_ANCHOR_RE.finditer(source_excerpt):
         try:
-            dates.add(
-                date(
-                    int(match.group("year")),
-                    _MONTHS[match.group("month")],
-                    int(match.group("day")),
+            anchors.append(
+                (
+                    date(
+                        int(match.group("year")),
+                        _MONTHS[match.group("month")],
+                        int(match.group("day")),
+                    ),
+                    match.start(),
                 )
             )
         except ValueError:
             continue
+    return anchors
+
+
+def _evidence_dates(source_excerpt: str) -> set[date]:
+    return {value for value, _ in _date_anchors(source_excerpt)}
+
+
+def _evidence_due_dates(source_excerpt: str) -> set[date]:
+    dates: set[date] = set()
+    anchors = _date_anchors(source_excerpt)
+    for index, (value, start) in enumerate(anchors):
+        prefix = source_excerpt[max(0, start - 96) : start]
+        if _DUE_DATE_PREFIX_RE.search(prefix) is not None:
+            dates.add(value)
+            continue
+        if index == 0 or _DATE_LIST_CONNECTOR_RE.search(prefix) is None:
+            continue
+        previous_value, previous_start = anchors[index - 1]
+        previous_prefix = source_excerpt[max(0, previous_start - 96) : previous_start]
+        if _DUE_DATE_PREFIX_RE.search(previous_prefix) is not None:
+            dates.add(previous_value)
+            dates.add(value)
     return dates
 
 
@@ -166,7 +199,7 @@ def _require_evidence_value_support(
 ) -> None:
     if amount is not None and _evidence_amounts(source_excerpt) != {amount}:
         raise IntakeBlockedError("MODEL_EVIDENCE_VALUE_MISMATCH")
-    if stated_due_date is not None and _evidence_dates(source_excerpt) != {stated_due_date}:
+    if stated_due_date is not None and _evidence_due_dates(source_excerpt) != {stated_due_date}:
         raise IntakeBlockedError("MODEL_EVIDENCE_VALUE_MISMATCH")
 
 

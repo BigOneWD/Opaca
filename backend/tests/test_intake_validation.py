@@ -361,6 +361,135 @@ def test_confirmed_amount_and_due_date_must_be_supported_by_exact_evidence(
         parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
 
 
+def test_confirmed_due_date_must_be_tied_to_due_semantics() -> None:
+    document = "Invoice reference 2026-12-31. Payment of USD 100.00 is due next quarter."
+    raw = json.dumps(
+        {
+            "document_summary": "payment",
+            "candidates": [
+                {
+                    "name": "payment",
+                    "amount": "100.00",
+                    "due_date": "2026-12-31",
+                    "currency": "USD",
+                    "certainty": "CONFIRMED",
+                    "uncertainty_reason": None,
+                    "source_excerpt": document,
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(IntakeBlockedError, match="MODEL_EVIDENCE_VALUE_MISMATCH"):
+        parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+
+def test_invoice_only_date_cannot_be_used_when_explicit_due_date_is_elsewhere() -> None:
+    document = (
+        "Invoice date 2026-09-01. Invoice total USD 100.00. "
+        "Payment is due on 2026-09-30."
+    )
+    raw = json.dumps(
+        {
+            "document_summary": "payment",
+            "candidates": [
+                {
+                    "name": "payment",
+                    "amount": "100.00",
+                    "due_date": "2026-09-01",
+                    "currency": "USD",
+                    "certainty": "CONFIRMED",
+                    "uncertainty_reason": None,
+                    "source_excerpt": "Invoice date 2026-09-01. Invoice total USD 100.00.",
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(IntakeBlockedError, match="MODEL_EVIDENCE_VALUE_MISMATCH"):
+        parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+
+def test_explicit_due_date_and_payable_date_semantics_are_accepted() -> None:
+    cases = (
+        ("Invoice total USD 100.00. Due date: 2026-12-31.", "2026-12-31"),
+        ("Invoice total USD 100.00. Payable on 2026-12-31.", "2026-12-31"),
+    )
+
+    for document, due_date in cases:
+        result = parse_and_validate_extraction(
+            document,
+            json.dumps(
+                {
+                    "document_summary": "payment",
+                    "candidates": [
+                        {
+                            "name": "payment",
+                            "amount": "100.00",
+                            "due_date": due_date,
+                            "currency": "USD",
+                            "certainty": "CONFIRMED",
+                            "uncertainty_reason": None,
+                            "source_excerpt": document,
+                        }
+                    ],
+                }
+            ),
+            as_of=date(2026, 9, 2),
+        )
+        assert result.trade_blocked is False
+
+
+def test_explicit_due_date_is_selected_over_unrelated_invoice_date() -> None:
+    document = (
+        "Invoice date 2026-09-01. Invoice total USD 100.00. "
+        "Payment is due on 2026-09-30."
+    )
+    raw = json.dumps(
+        {
+            "document_summary": "payment",
+            "candidates": [
+                {
+                    "name": "payment",
+                    "amount": "100.00",
+                    "due_date": "2026-09-30",
+                    "currency": "USD",
+                    "certainty": "CONFIRMED",
+                    "uncertainty_reason": None,
+                    "source_excerpt": document,
+                }
+            ],
+        }
+    )
+
+    result = parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+    assert result.trade_blocked is False
+
+
+def test_multiple_due_dates_remain_ambiguous() -> None:
+    document = "Payment of USD 100.00 is due on 2026-09-12 or 2026-09-30."
+    raw = json.dumps(
+        {
+            "document_summary": "payment",
+            "candidates": [
+                {
+                    "name": "payment",
+                    "amount": "100.00",
+                    "due_date": "2026-09-12",
+                    "currency": "USD",
+                    "certainty": "CONFIRMED",
+                    "uncertainty_reason": None,
+                    "source_excerpt": document,
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(IntakeBlockedError, match="MODEL_EVIDENCE_VALUE_MISMATCH"):
+        parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+
 def test_float_amount_is_rejected() -> None:
     document = "Payment of USD 10.00 is due by 12 September 2026."
     raw = json.dumps(
