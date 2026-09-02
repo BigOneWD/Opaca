@@ -167,6 +167,30 @@ def test_duplicate_candidate_json_key_is_rejected() -> None:
         parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
 
 
+@pytest.mark.parametrize("due_date", ["20260912", "2026-W37-6"])
+def test_noncanonical_due_date_is_rejected(due_date: str) -> None:
+    document = "Payment of USD 10.00 is due by 12 September 2026."
+    raw = json.dumps(
+        {
+            "document_summary": "payment",
+            "candidates": [
+                {
+                    "name": "payment",
+                    "amount": "10.00",
+                    "due_date": due_date,
+                    "currency": "USD",
+                    "certainty": "CONFIRMED",
+                    "uncertainty_reason": None,
+                    "source_excerpt": document,
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(IntakeBlockedError, match="YYYY-MM-DD"):
+        parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+
 @pytest.mark.parametrize(
     "certainty",
     ["Certainty.CONFIRMED", "foo.confirmed", "confirmed", ""],

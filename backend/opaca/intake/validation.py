@@ -31,6 +31,7 @@ _CANDIDATE_KEYS = {
 _MONEY_ANCHOR_RE = re.compile(
     r"\bUSD[ \t]+(?P<amount>(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\b"
 )
+_CANONICAL_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _ISO_DATE_ANCHOR_RE = re.compile(r"(?<!\d)(?P<value>\d{4}-\d{2}-\d{2})(?!\d)")
 _LONG_DATE_ANCHOR_RE = re.compile(
     r"(?<!\d)(?P<day>\d{1,2})[ \t]+"
@@ -99,6 +100,8 @@ def _parse_positive_decimal(value: object) -> Decimal:
 def _parse_iso_date(value: object) -> date:
     if not isinstance(value, str):
         raise IntakeBlockedError("due_date must be an ISO date string")
+    if _CANONICAL_DATE_RE.fullmatch(value) is None:
+        raise IntakeBlockedError("due_date must be YYYY-MM-DD")
     try:
         return date.fromisoformat(value)
     except ValueError as exc:
