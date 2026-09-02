@@ -131,6 +131,39 @@ def test_evidence_mismatch_blocks_entire_run() -> None:
         parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
 
 
+@pytest.mark.parametrize(
+    ("field", "unsupported_value"),
+    [
+        ("amount", "1.00"),
+        ("due_date", "2026-12-31"),
+    ],
+)
+def test_confirmed_amount_and_due_date_must_be_supported_by_exact_evidence(
+    field: str,
+    unsupported_value: str,
+) -> None:
+    document = "Payment of USD 240,000.00 is due by 12 September 2026."
+    candidate: dict[str, object] = {
+        "name": "September payroll",
+        "amount": "240000.00",
+        "due_date": "2026-09-12",
+        "currency": "USD",
+        "certainty": "CONFIRMED",
+        "uncertainty_reason": None,
+        "source_excerpt": document,
+    }
+    candidate[field] = unsupported_value
+    raw = json.dumps(
+        {
+            "document_summary": "September payroll",
+            "candidates": [candidate],
+        }
+    )
+
+    with pytest.raises(IntakeBlockedError, match="MODEL_EVIDENCE_VALUE_MISMATCH"):
+        parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+
 def test_float_amount_is_rejected() -> None:
     document = "Payment of USD 10.00 is due by 12 September 2026."
     raw = json.dumps(
