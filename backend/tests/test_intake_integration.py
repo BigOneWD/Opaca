@@ -89,6 +89,7 @@ def test_unquantified_obligation_cannot_be_handed_to_liquidity_engine() -> None:
     intake = parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
 
     assert intake.trade_blocked is True
-    assert intake.effective_obligations == ()
+    with pytest.raises(IntakeBlockedError, match="UNQUANTIFIED_OBLIGATION"):
+        _ = intake.effective_obligations
     with pytest.raises(IntakeBlockedError, match="UNQUANTIFIED_OBLIGATION"):
         require_effective_obligations(intake)
