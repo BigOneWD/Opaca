@@ -13,7 +13,7 @@ from pathlib import Path
 
 from opaca.domain.money import positive_money
 from opaca.persistence.codec import dump_datetime, dump_decimal, load_datetime, load_decimal
-from opaca.wheel.models import WheelAction, WheelApprovalBinding, WheelShareLot
+from opaca.wheel.models import WheelAction, WheelApprovalBinding, WheelShareLot, WheelState
 
 
 class WheelPersistenceError(RuntimeError):
@@ -279,6 +279,25 @@ class WheelStore:
         """Return the latest persisted reconciliation snapshot version."""
         return self._meta_value(self._conn, _SNAPSHOT_VERSION_KEY)
 
+    def persist_wheel_state(self, underlying: str, state: WheelState) -> None:
+        """Persist the derived fail-closed state for one underlying."""
+        if not underlying.strip():
+            raise ValueError("underlying must be non-empty")
+        if not isinstance(state, WheelState):
+            raise TypeError("state must be a WheelState")
+        with self.begin_immediate() as connection:
+            self._persist_wheel_state_in_connection(connection, underlying, state)
+
+    def wheel_state(self, underlying: str) -> WheelState | None:
+        """Load a persisted derived state for one underlying."""
+        value = self._meta_value(self._conn, f"wheel_state:{underlying}")
+        if value is None:
+            return None
+        try:
+            return WheelState(value)
+        except ValueError as exc:
+            raise WheelPersistenceError("invalid persisted Wheel state") from exc
+
     def active_assignment_reservations(self) -> list[WheelReservation]:
         """Return active assignment reservations from this Wheel database."""
         rows = self._conn.execute(
@@ -352,6 +371,7 @@ class WheelStore:
         *,
         proven: bool,
         now: datetime,
+        wheel_state: WheelState | None = None,
     ) -> bool:
         """Release only when a caller supplies a positive no-exposure proof."""
         dump_datetime(now)
@@ -363,7 +383,25 @@ class WheelStore:
                 "WHERE reservation_id = ? AND kind = ? AND status = ?",
                 ("RELEASED", reservation_id, "CASH_DEPLOYMENT", "ACTIVE"),
             )
-            return cursor.rowcount == 1
+            if cursor.rowcount != 1:
+                return False
+            if wheel_state is not None:
+                self._persist_wheel_state_in_connection(
+                    connection,
+                    self._reservation_underlying(connection, reservation_id),
+                    wheel_state,
+                )
+            return True
+
+    @staticmethod
+    def _reservation_underlying(connection: sqlite3.Connection, reservation_id: str) -> str:
+        row = connection.execute(
+            "SELECT underlying FROM wheel_reservations WHERE reservation_id = ?",
+            (reservation_id,),
+        ).fetchone()
+        if row is None:
+            raise WheelPersistenceError("assignment reservation is missing")
+        return str(row["underlying"])
 
     def convert_assignment_to_share_lot(
         self,
@@ -375,6 +413,7 @@ class WheelStore:
         assignment_basis: Decimal,
         market_value: Decimal,
         now: datetime,
+        wheel_state: WheelState | None = None,
     ) -> None:
         """Atomically persist assigned shares before releasing their reservation."""
         lot = WheelShareLot(
@@ -416,6 +455,8 @@ class WheelStore:
                     dump_decimal(lot.market_value),
                 ),
             )
+            if wheel_state is not None:
+                self._persist_wheel_state_in_connection(connection, lot.underlying, wheel_state)
             cursor = connection.execute(
                 "UPDATE wheel_reservations SET status = ? "
                 "WHERE reservation_id = ? AND status = ?",
@@ -507,6 +548,18 @@ class WheelStore:
             approved_sell_limit_premium=load_decimal(str(row["approved_sell_limit_premium"])),
             approved_at=load_datetime(str(row["approved_at"])),
             expires_at=load_datetime(str(row["expires_at"])),
+        )
+
+    @staticmethod
+    def _persist_wheel_state_in_connection(
+        connection: sqlite3.Connection,
+        underlying: str,
+        state: WheelState,
+    ) -> None:
+        connection.execute(
+            "INSERT INTO wheel_meta(key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (f"wheel_state:{underlying}", state.value),
         )
 
     @staticmethod
