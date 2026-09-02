@@ -174,6 +174,8 @@ def parse_and_validate_extraction(
     raw_candidates = top["candidates"]
     if not isinstance(raw_candidates, list):
         raise IntakeBlockedError("candidates must be a list")
+    if not raw_candidates:
+        raise IntakeBlockedError("ZERO_CANDIDATES_UNVERIFIED")
     if len(raw_candidates) > 20:
         raise IntakeBlockedError("too many candidates")
 
