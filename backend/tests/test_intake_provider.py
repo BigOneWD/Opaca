@@ -122,7 +122,19 @@ def test_openai_compatible_provider_builds_fixed_request_and_returns_json() -> N
     assert body["model"] == "local-model"
     assert body["temperature"] == 0
     assert body["messages"][0]["role"] == "system"
-    assert "obligation" in body["messages"][0]["content"].lower()
+    system_prompt = body["messages"][0]["content"]
+    assert isinstance(system_prompt, str)
+    assert "document_summary" in system_prompt
+    assert "candidates" in system_prompt
+    assert "amount" in system_prompt
+    assert "due_date" in system_prompt
+    assert "currency" in system_prompt
+    assert "certainty" in system_prompt
+    assert "source_excerpt" in system_prompt
+    assert "CONFIRMED" in system_prompt
+    assert "UNCERTAIN" in system_prompt
+    assert "exact" in system_prompt.lower()
+    assert "do not guess" in system_prompt.lower()
     assert body["messages"][1]["role"] == "user"
     assert "No obligations." in body["messages"][1]["content"]
     assert opener.request.get_header("Authorization") == "Bearer super-secret"
