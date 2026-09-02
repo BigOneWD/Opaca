@@ -45,9 +45,15 @@ def _extractor(provider: str, input_path: Path, fixture_json: Path | None) -> Ob
     if provider == "fixture":
         fixture_path = fixture_json or input_path.with_name("fixture_extraction.json")
         return FixtureObligationExtractor(raw_json=fixture_path.read_text(encoding="utf-8"))
+
+    base_url = os.environ.get("OPACA_LLM_BASE_URL", "").strip()
+    model = os.environ.get("OPACA_LLM_MODEL", "").strip()
+    if not base_url or not model:
+        raise ExtractionUnavailableError("provider configuration unavailable")
+
     return OpenAICompatibleObligationExtractor(
-        base_url=os.environ["OPACA_LLM_BASE_URL"],
-        model=os.environ["OPACA_LLM_MODEL"],
+        base_url=base_url,
+        model=model,
         api_key=os.environ.get("OPACA_LLM_API_KEY", ""),
     )
 
@@ -61,9 +67,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     input_path: Path = args.input
     as_of = date.fromisoformat(args.as_of)
     document = input_path.read_text(encoding="utf-8")
-    extractor = _extractor(args.provider, input_path, args.fixture_json)
 
     try:
+        extractor = _extractor(args.provider, input_path, args.fixture_json)
         raw_json = extractor.extract(document, as_of=as_of)
     except ExtractionUnavailableError:
         sys.stdout.write("INTAKE UNAVAILABLE\n")
