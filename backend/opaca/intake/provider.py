@@ -22,7 +22,8 @@ class ExtractionUnavailableError(RuntimeError):
 class ObligationExtractor(Protocol):
     """Structural interface shared by real and fixture extraction providers."""
 
-    provider_name: str
+    @property
+    def provider_name(self) -> str: ...
 
     def extract(self, document: str, *, as_of: date) -> str: ...
 
@@ -30,7 +31,7 @@ class ObligationExtractor(Protocol):
 class _ResponseLike(Protocol):
     status: int
 
-    def __enter__(self) -> "_ResponseLike": ...
+    def __enter__(self) -> _ResponseLike: ...
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None: ...
 
