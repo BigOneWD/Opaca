@@ -91,8 +91,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         out.write(f"STATED DUE DATE: {_format_date(candidate.stated_due_date)}\n")
         out.write(f"EFFECTIVE DUE DATE: {_format_date(candidate.effective_due_date)}\n")
         out.write(
-            "RESERVED CONSERVATIVELY: "
-            f"{'YES' if candidate.reserved_conservatively else 'NO'}\n"
+            f"RESERVED CONSERVATIVELY: {'YES' if candidate.reserved_conservatively else 'NO'}\n"
         )
         if candidate.certainty.value == "UNCERTAIN":
             out.write("HUMAN REVIEW: REQUIRED\n")
