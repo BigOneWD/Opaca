@@ -43,6 +43,18 @@ _LONG_DATE_ANCHOR_RE = re.compile(
     r"(?P<month>January|February|March|April|May|June|July|August|September|October|November|December)"
     r"[ \t]+(?P<year>\d{4})(?!\d)"
 )
+_NEGATED_DUE_DATE_PREFIX_RE = re.compile(
+    r"(?:\b(?:is|was|will)[ \t]+not[ \t]+"
+    r"(?:yet[ \t]+|currently[ \t]+)?(?:be[ \t]+)?(?:due|payable)"
+    r"|\b(?:isn|wasn|won)['’]t[ \t]+"
+    r"(?:yet[ \t]+|currently[ \t]+)?(?:be[ \t]+)?(?:due|payable)"
+    r"|\bno[ \t]+longer[ \t]+(?:due|payable)"
+    r"|\bnever[ \t]+(?:due|payable)"
+    r"|\bnot[ \t]+(?:due|payable))"
+    r"(?:[ \t]+date)?[ \t]*(?:is[ \t]*)?"
+    r"(?:on|by)?[ \t]*:?[ \t]*$",
+    re.IGNORECASE,
+)
 _DUE_DATE_PREFIX_RE = re.compile(
     r"(?:\b(?:due|payable)(?:[ \t]+date)?[ \t]*(?:is[ \t]*)?"
     r"(?:on|by)?[ \t]*:?[ \t]*"
@@ -179,6 +191,8 @@ def _evidence_due_dates(source_excerpt: str) -> set[date]:
     anchors = _date_anchors(source_excerpt)
     for index, (value, start) in enumerate(anchors):
         prefix = source_excerpt[max(0, start - 96) : start]
+        if _NEGATED_DUE_DATE_PREFIX_RE.search(prefix) is not None:
+            continue
         if _DUE_DATE_PREFIX_RE.search(prefix) is not None:
             dates.add(value)
             continue
@@ -186,6 +200,8 @@ def _evidence_due_dates(source_excerpt: str) -> set[date]:
             continue
         previous_value, previous_start = anchors[index - 1]
         previous_prefix = source_excerpt[max(0, previous_start - 96) : previous_start]
+        if _NEGATED_DUE_DATE_PREFIX_RE.search(previous_prefix) is not None:
+            continue
         if _DUE_DATE_PREFIX_RE.search(previous_prefix) is not None:
             dates.add(previous_value)
             dates.add(value)
