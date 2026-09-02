@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import cast
@@ -21,6 +22,29 @@ _CANDIDATE_KEYS = {
     "certainty",
     "uncertainty_reason",
     "source_excerpt",
+}
+_MONEY_ANCHOR_RE = re.compile(
+    r"\bUSD[ \t]+(?P<amount>(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\b"
+)
+_ISO_DATE_ANCHOR_RE = re.compile(r"(?<!\d)(?P<value>\d{4}-\d{2}-\d{2})(?!\d)")
+_LONG_DATE_ANCHOR_RE = re.compile(
+    r"(?<!\d)(?P<day>\d{1,2})[ \t]+"
+    r"(?P<month>January|February|March|April|May|June|July|August|September|October|November|December)"
+    r"[ \t]+(?P<year>\d{4})(?!\d)"
+)
+_MONTHS = {
+    "January": 1,
+    "February": 2,
+    "March": 3,
+    "April": 4,
+    "May": 5,
+    "June": 6,
+    "July": 7,
+    "August": 8,
+    "September": 9,
+    "October": 10,
+    "November": 11,
+    "December": 12,
 }
 
 
@@ -71,6 +95,51 @@ def _parse_certainty(value: object) -> Certainty:
         return Certainty(value)
     except ValueError as exc:
         raise IntakeBlockedError("certainty must be CONFIRMED or UNCERTAIN") from exc
+
+
+def _evidence_amounts(source_excerpt: str) -> set[Decimal]:
+    amounts: set[Decimal] = set()
+    for match in _MONEY_ANCHOR_RE.finditer(source_excerpt):
+        token = match.group("amount").replace(",", "")
+        try:
+            parsed = Decimal(token)
+        except InvalidOperation:
+            continue
+        if parsed.is_finite() and parsed > ZERO:
+            amounts.add(parsed)
+    return amounts
+
+
+def _evidence_dates(source_excerpt: str) -> set[date]:
+    dates: set[date] = set()
+    for match in _ISO_DATE_ANCHOR_RE.finditer(source_excerpt):
+        try:
+            dates.add(date.fromisoformat(match.group("value")))
+        except ValueError:
+            continue
+    for match in _LONG_DATE_ANCHOR_RE.finditer(source_excerpt):
+        try:
+            dates.add(
+                date(
+                    int(match.group("year")),
+                    _MONTHS[match.group("month")],
+                    int(match.group("day")),
+                )
+            )
+        except ValueError:
+            continue
+    return dates
+
+
+def _require_evidence_value_support(
+    source_excerpt: str,
+    amount: Decimal | None,
+    stated_due_date: date | None,
+) -> None:
+    if amount is not None and _evidence_amounts(source_excerpt) != {amount}:
+        raise IntakeBlockedError("MODEL_EVIDENCE_VALUE_MISMATCH")
+    if stated_due_date is not None and _evidence_dates(source_excerpt) != {stated_due_date}:
+        raise IntakeBlockedError("MODEL_EVIDENCE_VALUE_MISMATCH")
 
 
 def _candidate_id(
@@ -157,6 +226,8 @@ def parse_and_validate_extraction(
             )
             effective_due_date = as_of if amount is not None else None
             reserved_conservatively = amount is not None
+
+        _require_evidence_value_support(source_excerpt, amount, stated_due_date)
 
         candidate_id = _candidate_id(
             source_sha256,
