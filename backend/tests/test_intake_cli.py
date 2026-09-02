@@ -43,12 +43,18 @@ def test_fixture_intake_demo_is_explicit_and_read_only(capsys) -> None:
     assert "BROKER MUTATION: NOT AVAILABLE IN THIS COMMAND" in captured.out
 
 
-def test_unquantified_fixture_surfaces_block_reason(capsys) -> None:
+def test_unquantified_fixture_surfaces_block_reason(tmp_path: Path, capsys) -> None:
+    input_path = tmp_path / "unquantified_obligation.md"
+    input_path.write_text(
+        "A regulatory payment is due this month; amount pending assessment.\n",
+        encoding="utf-8",
+    )
+
     rc = main(
         [
             "intake-demo",
             "--input",
-            str(_FIXTURES / "messy_obligations.md"),
+            str(input_path),
             "--as-of",
             "2026-09-02",
             "--provider",
