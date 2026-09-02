@@ -346,3 +346,17 @@ def test_fixture_extractor_is_explicit_and_satisfies_protocol() -> None:
 
     assert extractor.provider_name == "fixture"
     assert _extract_through_protocol(extractor, "Synthetic fixture text.") == raw_json
+
+
+def test_oversized_fixture_response_becomes_intake_unavailable() -> None:
+    extractor = FixtureObligationExtractor(raw_json="x" * 100_001)
+
+    with pytest.raises(ExtractionUnavailableError, match="response exceeds"):
+        extractor.extract("No obligations.", as_of=date(2026, 9, 2))
+
+
+def test_oversized_fixture_document_becomes_intake_unavailable() -> None:
+    extractor = FixtureObligationExtractor(raw_json='{"document_summary":"fixture"}')
+
+    with pytest.raises(ExtractionUnavailableError, match="document exceeds"):
+        extractor.extract("x" * 50_001, as_of=date(2026, 9, 2))

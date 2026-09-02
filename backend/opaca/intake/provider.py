@@ -132,7 +132,11 @@ class FixtureObligationExtractor:
     provider_name: str = field(default="fixture", init=False)
 
     def extract(self, document: str, *, as_of: date) -> str:
-        del document, as_of
+        del as_of
+        if len(document) > MAX_DOCUMENT_CHARS:
+            raise ExtractionUnavailableError("document exceeds 50000 character limit")
+        if len(self.raw_json) > MAX_MODEL_RESPONSE_CHARS:
+            raise ExtractionUnavailableError("provider response exceeds size limit")
         return self.raw_json
 
 
