@@ -3,7 +3,6 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
-
 from opaca.intake import Certainty, IntakeBlockedError, parse_and_validate_extraction
 
 
