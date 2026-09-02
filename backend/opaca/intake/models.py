@@ -10,6 +10,15 @@ from enum import StrEnum
 from opaca.domain.models import Obligation
 
 
+MAX_DOCUMENT_CHARS = 50_000
+MAX_MODEL_RESPONSE_CHARS = 100_000
+MAX_PROVIDER_RESPONSE_BYTES = 400_000
+MAX_DOCUMENT_SUMMARY_CHARS = 2_000
+MAX_CANDIDATE_NAME_CHARS = 500
+MAX_UNCERTAINTY_REASON_CHARS = 2_000
+MAX_SOURCE_EXCERPT_CHARS = 10_000
+
+
 class IntakeBlockedError(RuntimeError):
     """Raised when intake output is unsafe for downstream treasury use."""
 

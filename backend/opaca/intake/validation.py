@@ -14,6 +14,12 @@ from opaca.domain.money import ZERO, MoneyError, positive_money
 from opaca.intake.models import (
     Certainty,
     IntakeBlockedError,
+    MAX_CANDIDATE_NAME_CHARS,
+    MAX_DOCUMENT_CHARS,
+    MAX_DOCUMENT_SUMMARY_CHARS,
+    MAX_MODEL_RESPONSE_CHARS,
+    MAX_SOURCE_EXCERPT_CHARS,
+    MAX_UNCERTAINTY_REASON_CHARS,
     ObligationIntakeResult,
     ValidatedCandidate,
 )
@@ -76,10 +82,13 @@ def _require_exact_keys(data: dict[str, object], expected: set[str], label: str)
         raise IntakeBlockedError(f"{label} schema keys are invalid")
 
 
-def _require_non_empty_string(value: object, label: str) -> str:
+def _require_non_empty_string(value: object, label: str, max_chars: int | None = None) -> str:
     if not isinstance(value, str) or not value.strip():
         raise IntakeBlockedError(f"{label} must be a non-empty string")
-    return value.strip()
+    result = value.strip()
+    if max_chars is not None and len(result) > max_chars:
+        raise IntakeBlockedError(f"{label} exceeds length limit")
+    return result
 
 
 def _parse_positive_decimal(value: object) -> Decimal:
@@ -182,6 +191,10 @@ def parse_and_validate_extraction(
     as_of: date,
 ) -> ObligationIntakeResult:
     """Parse one extraction response and conservatively validate obligations."""
+    if len(document) > MAX_DOCUMENT_CHARS:
+        raise IntakeBlockedError("document exceeds size limit")
+    if len(raw_json) > MAX_MODEL_RESPONSE_CHARS:
+        raise IntakeBlockedError("model output exceeds size limit")
     try:
         decoded = json.loads(raw_json, object_pairs_hook=_reject_duplicate_json_keys)
     except _DuplicateJSONKeyError:
@@ -192,7 +205,9 @@ def parse_and_validate_extraction(
         raise IntakeBlockedError("model output must be one JSON object")
     top = cast(dict[str, object], decoded)
     _require_exact_keys(top, _TOP_LEVEL_KEYS, "top-level")
-    _require_non_empty_string(top["document_summary"], "document_summary")
+    _require_non_empty_string(
+        top["document_summary"], "document_summary", MAX_DOCUMENT_SUMMARY_CHARS
+    )
     raw_candidates = top["candidates"]
     if not isinstance(raw_candidates, list):
         raise IntakeBlockedError("candidates must be a list")
@@ -215,12 +230,14 @@ def parse_and_validate_extraction(
         candidate = cast(dict[str, object], raw_candidate)
         _require_exact_keys(candidate, _CANDIDATE_KEYS, "candidate")
 
-        name = _require_non_empty_string(candidate["name"], "name")
+        name = _require_non_empty_string(candidate["name"], "name", MAX_CANDIDATE_NAME_CHARS)
         if candidate["currency"] != "USD":
             raise IntakeBlockedError("currency must be USD")
         certainty = _parse_certainty(candidate["certainty"])
 
-        source_excerpt = _require_non_empty_string(candidate["source_excerpt"], "source_excerpt")
+        source_excerpt = _require_non_empty_string(
+            candidate["source_excerpt"], "source_excerpt", MAX_SOURCE_EXCERPT_CHARS
+        )
         if _normalized_newlines(source_excerpt) not in normalized_document:
             raise IntakeBlockedError("MODEL_EVIDENCE_MISMATCH")
 
@@ -238,7 +255,9 @@ def parse_and_validate_extraction(
             reserved_conservatively = False
         else:
             uncertainty_reason = _require_non_empty_string(
-                candidate["uncertainty_reason"], "uncertainty_reason"
+                candidate["uncertainty_reason"],
+                "uncertainty_reason",
+                MAX_UNCERTAINTY_REASON_CHARS,
             )
             amount = (
                 None

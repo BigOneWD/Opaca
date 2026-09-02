@@ -237,6 +237,17 @@ def test_oversize_document_never_calls_network() -> None:
     assert opener.calls == 0
 
 
+def test_oversized_model_response_becomes_intake_unavailable() -> None:
+    oversized_content = "x" * 100_001
+    body = json.dumps(
+        {"choices": [{"message": {"content": oversized_content}}]}
+    ).encode("utf-8")
+    extractor = _extractor(RawUrlOpen(body))
+
+    with pytest.raises(ExtractionUnavailableError, match="response exceeds"):
+        extractor.extract("No obligations.", as_of=date(2026, 9, 2))
+
+
 def test_provider_error_never_leaks_api_key() -> None:
     secret = "super-secret"
     opener = TimeoutUrlOpen(f"transport failed while using {secret}")

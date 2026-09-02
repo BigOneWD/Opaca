@@ -122,6 +122,96 @@ def test_zero_candidates_never_becomes_safe_empty_obligations() -> None:
         parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
 
 
+def test_oversized_fixture_response_is_blocked() -> None:
+    document = "A regulatory payment is due this month; amount pending assessment."
+    raw = (
+        json.dumps(
+            {
+                "document_summary": "unquantified note",
+                "candidates": [
+                    {
+                        "name": "unquantified note",
+                        "amount": None,
+                        "due_date": None,
+                        "currency": "USD",
+                        "certainty": "UNCERTAIN",
+                        "uncertainty_reason": "Amount is not stated",
+                        "source_excerpt": document,
+                    }
+                ],
+            }
+        )
+        + (" " * 100_001)
+    )
+
+    with pytest.raises(IntakeBlockedError, match="model output exceeds"):
+        parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+
+def test_oversized_fixture_document_is_blocked() -> None:
+    document = "x" * 50_001
+    raw = json.dumps(
+        {
+            "document_summary": "unquantified note",
+            "candidates": [
+                {
+                    "name": "unquantified note",
+                    "amount": None,
+                    "due_date": None,
+                    "currency": "USD",
+                    "certainty": "UNCERTAIN",
+                    "uncertainty_reason": "Amount is not stated",
+                    "source_excerpt": document,
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(IntakeBlockedError, match="document exceeds"):
+        parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+
+@pytest.mark.parametrize(
+    ("field", "limit"),
+    [
+        ("document_summary", 2_000),
+        ("name", 500),
+        ("uncertainty_reason", 2_000),
+        ("source_excerpt", 10_000),
+    ],
+)
+def test_oversized_candidate_scalar_is_blocked(field: str, limit: int) -> None:
+    document = "Payment of USD 10.00 is due by 12 September 2026."
+    candidate: dict[str, object] = {
+        "name": "payment",
+        "amount": "10.00",
+        "due_date": "2026-09-12",
+        "currency": "USD",
+        "certainty": "CONFIRMED",
+        "uncertainty_reason": None,
+        "source_excerpt": document,
+    }
+    if field in {"uncertainty_reason", "source_excerpt"}:
+        candidate["certainty"] = "UNCERTAIN"
+        candidate["amount"] = None
+        candidate["due_date"] = None
+        candidate["uncertainty_reason"] = "Reason is stated"
+    payload: dict[str, object] = {
+        "document_summary": "payment",
+        "candidates": [candidate],
+    }
+    if field == "document_summary":
+        payload[field] = "x" * (limit + 1)
+    elif field == "source_excerpt":
+        document = "x" * (limit + 1)
+        candidate[field] = document
+    else:
+        candidate[field] = "x" * (limit + 1)
+
+    with pytest.raises(IntakeBlockedError, match="length limit"):
+        parse_and_validate_extraction(document, json.dumps(payload), as_of=date(2026, 9, 2))
+
+
 def test_duplicate_top_level_json_key_is_rejected() -> None:
     document = "Payment of USD 10.00 is due by 12 September 2026."
     candidate = json.dumps(

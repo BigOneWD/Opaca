@@ -9,6 +9,12 @@ from http.client import HTTPException
 from typing import Protocol, cast
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from opaca.intake.models import (
+    MAX_DOCUMENT_CHARS,
+    MAX_MODEL_RESPONSE_CHARS,
+    MAX_PROVIDER_RESPONSE_BYTES,
+)
+
 _SYSTEM_PROMPT = """You extract corporate cash obligations from supplied text.
 Return exactly one JSON object and nothing else: no Markdown fence and no prose.
 Use this exact schema:
@@ -36,7 +42,6 @@ infer, calculate, or normalize a missing amount or due date from conventions suc
 terms unless the source contains every required anchor. Do not make trading decisions,
 authorize orders, size trades, or invent missing obligation facts.
 """
-_MAX_DOCUMENT_CHARS = 50_000
 
 
 class ExtractionUnavailableError(RuntimeError):
@@ -114,6 +119,8 @@ def _assistant_content(payload: dict[str, object]) -> str:
     content = message_object.get("content")
     if not isinstance(content, str):
         raise ExtractionUnavailableError("provider response missing assistant content")
+    if len(content) > MAX_MODEL_RESPONSE_CHARS:
+        raise ExtractionUnavailableError("provider response exceeds size limit")
     return content
 
 
@@ -140,7 +147,7 @@ class OpenAICompatibleObligationExtractor:
     provider_name: str = "openai-compatible"
 
     def extract(self, document: str, *, as_of: date) -> str:
-        if len(document) > _MAX_DOCUMENT_CHARS:
+        if len(document) > MAX_DOCUMENT_CHARS:
             raise ExtractionUnavailableError("document exceeds 50000 character limit")
 
         try:
@@ -168,6 +175,8 @@ class OpenAICompatibleObligationExtractor:
                 if response.status < 200 or response.status >= 300:
                     raise ExtractionUnavailableError("provider returned non-success status")
                 raw_body = response.read()
+                if len(raw_body) > MAX_PROVIDER_RESPONSE_BYTES:
+                    raise ExtractionUnavailableError("provider response exceeds size limit")
         except ExtractionUnavailableError:
             raise
         except (TimeoutError, OSError, HTTPException, ValueError, TypeError):
