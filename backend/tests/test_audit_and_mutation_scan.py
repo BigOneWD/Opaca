@@ -25,12 +25,14 @@ GUARD_FILES = frozenset(
         str(PRODUCTION_ROOT / "broker" / "paper_execution.py"),
         str(PRODUCTION_ROOT / "execution" / "gateway.py"),
         str(PRODUCTION_ROOT / "execution" / "service.py"),
+        str(PRODUCTION_ROOT / "wheel" / "execution.py"),
     }
 )
 SUBMIT_IMPL_FILES = frozenset(
     {
         str(PRODUCTION_ROOT / "broker" / "paper_execution.py"),
         str(PRODUCTION_ROOT / "execution" / "gateway.py"),
+        str(PRODUCTION_ROOT / "wheel" / "execution.py"),
     }
 )
 

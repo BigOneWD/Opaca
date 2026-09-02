@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
 from opaca.domain.models import AuthorityDecision, AuthorityResult, BrokerEnvironment
@@ -14,11 +15,12 @@ from opaca.wheel.execution import (
     ExecutionStatus,
     OptionOrderRequest,
     WheelExecutionAuthorization,
+    WheelExecutionResult,
     submit_authorized_csp,
 )
 from opaca.wheel.lifecycle import AuthorizedWheelOrder
-from opaca.wheel.models import OptionContract, OptionQuote
-from opaca.wheel.policy import WheelGuardEngine
+from opaca.wheel.models import OptionContract, OptionQuote, WheelApprovalBinding
+from opaca.wheel.policy import WheelGuardEngine, WheelPolicyContext
 from opaca.wheel.reconciliation import WheelBrokerOrder
 from opaca.wheel.store import WheelStore
 from tests.wheel.test_atomic_reservation import (
@@ -46,7 +48,7 @@ class FakeExecutionGateway:
 def build_authorization(
     store: WheelStore,
     run_id: str = "execution",
-) -> tuple[WheelExecutionAuthorization, object, AuthorityDecision]:
+) -> tuple[WheelExecutionAuthorization, WheelPolicyContext, AuthorityDecision]:
     candidate = proposal(run_id)
     order = authorize(store, run_id)
     checks = WheelGuardEngine().evaluate(
@@ -79,15 +81,15 @@ def submit(
     store: WheelStore,
     gateway: FakeExecutionGateway,
     authorization: WheelExecutionAuthorization,
-    context: object,
+    context: WheelPolicyContext,
     authority: AuthorityDecision,
     *,
     expected_snapshot_version: str = "snapshot-1",
     contract: OptionContract | None = None,
     quote: OptionQuote | None = None,
-    approval: object | None = None,
+    approval: WheelApprovalBinding | None = None,
     account_id: str = "competition-paper",
-) -> object:
+) -> WheelExecutionResult:
     current_contract = authorization.proposal.contract if contract is None else contract
     current_quote = authorization.proposal.quote if quote is None else quote
     return submit_authorized_csp(
@@ -147,13 +149,13 @@ def test_all_final_gates_pass_and_submit_once(tmp_path: Path) -> None:
 def test_environment_kill_switch_and_account_gates_block_submit(
     tmp_path: Path,
     label: str,
-    context_change: dict[str, object],
+    context_change: dict[str, Any],
 ) -> None:
     del label
     with new_store(tmp_path / "environment-gate.sqlite3") as store:
         authorization, context, authority = build_authorization(store)
         gateway = FakeExecutionGateway(response=valid_response(authorization))
-        changed_context = replace(context, **context_change)  # type: ignore[arg-type]
+        changed_context = replace(context, **context_change)
 
         result = submit(store, gateway, authorization, changed_context, authority)
 
@@ -209,10 +211,13 @@ def test_changed_contract_identity_or_multiplier_blocks_submit(
     with new_store(tmp_path / f"contract-{field}.sqlite3") as store:
         authorization, context, authority = build_authorization(store)
         gateway = FakeExecutionGateway(response=valid_response(authorization))
-        changed = replace(
-            authorization.proposal.contract,
-            **{field: "OTHER260904P00100000" if field == "occ_symbol" else Decimal("101")},
-        )
+        if field == "occ_symbol":
+            changed = replace(
+                authorization.proposal.contract,
+                occ_symbol="OTHER260904P00100000",
+            )
+        else:
+            changed = replace(authorization.proposal.contract, multiplier=Decimal("101"))
 
         result = submit(
             store,
@@ -273,8 +278,6 @@ def test_hard_reject_cannot_reach_gateway(tmp_path: Path) -> None:
 
 
 def test_approval_required_accepts_exact_current_binding(tmp_path: Path) -> None:
-    from opaca.wheel.models import WheelApprovalBinding
-
     with new_store(tmp_path / "approval-success.sqlite3") as store:
         authorization, context, auto = build_authorization(store)
         approval = WheelApprovalBinding(
@@ -305,8 +308,6 @@ def test_approval_required_accepts_exact_current_binding(tmp_path: Path) -> None
 
 
 def test_expired_or_changed_approval_cannot_submit(tmp_path: Path) -> None:
-    from opaca.wheel.models import WheelApprovalBinding
-
     with new_store(tmp_path / "approval-stale.sqlite3") as store:
         authorization, context, auto = build_authorization(store)
         approval = WheelApprovalBinding(
