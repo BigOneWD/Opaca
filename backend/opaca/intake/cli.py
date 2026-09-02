@@ -23,7 +23,6 @@ from opaca.intake.provider import (
 )
 from opaca.intake.validation import parse_and_validate_extraction, require_effective_obligations
 
-
 _CANONICAL_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 

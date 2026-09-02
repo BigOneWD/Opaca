@@ -385,10 +385,7 @@ def test_confirmed_due_date_must_be_tied_to_due_semantics() -> None:
 
 
 def test_invoice_only_date_cannot_be_used_when_explicit_due_date_is_elsewhere() -> None:
-    document = (
-        "Invoice date 2026-09-01. Invoice total USD 100.00. "
-        "Payment is due on 2026-09-30."
-    )
+    document = "Invoice date 2026-09-01. Invoice total USD 100.00. Payment is due on 2026-09-30."
     raw = json.dumps(
         {
             "document_summary": "payment",
@@ -441,10 +438,7 @@ def test_explicit_due_date_and_payable_date_semantics_are_accepted() -> None:
 
 
 def test_explicit_due_date_is_selected_over_unrelated_invoice_date() -> None:
-    document = (
-        "Invoice date 2026-09-01. Invoice total USD 100.00. "
-        "Payment is due on 2026-09-30."
-    )
+    document = "Invoice date 2026-09-01. Invoice total USD 100.00. Payment is due on 2026-09-30."
     raw = json.dumps(
         {
             "document_summary": "payment",

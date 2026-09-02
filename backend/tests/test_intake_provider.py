@@ -8,13 +8,13 @@ from typing import Any, ClassVar
 from urllib.request import Request
 
 import pytest
+from opaca.intake.models import MAX_PROVIDER_RESPONSE_BYTES
 from opaca.intake.provider import (
     ExtractionUnavailableError,
     FixtureObligationExtractor,
     ObligationExtractor,
     OpenAICompatibleObligationExtractor,
 )
-from opaca.intake.models import MAX_PROVIDER_RESPONSE_BYTES
 
 
 class FakeResponse:
@@ -144,7 +144,7 @@ class RedirectTargetHandler(BaseHTTPRequestHandler):
 
 
 def _extractor(
-    opener: FakeUrlOpen | RawUrlOpen | TimeoutUrlOpen | RaisingUrlOpen,
+    opener: FakeUrlOpen | RawUrlOpen | CapturingRawUrlOpen | TimeoutUrlOpen | RaisingUrlOpen,
     *,
     api_key: str = "super-secret",
 ) -> OpenAICompatibleObligationExtractor:
