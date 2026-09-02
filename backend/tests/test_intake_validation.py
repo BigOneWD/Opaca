@@ -1,7 +1,10 @@
+import json
 from datetime import date
 from decimal import Decimal
 
-from opaca.intake import Certainty, parse_and_validate_extraction
+import pytest
+
+from opaca.intake import Certainty, IntakeBlockedError, parse_and_validate_extraction
 
 
 def test_confirmed_candidate_becomes_domain_obligation() -> None:
@@ -81,3 +84,140 @@ def test_unquantified_obligation_blocks_downstream_use() -> None:
     assert result.trade_blocked is True
     assert "UNQUANTIFIED_OBLIGATION" in result.block_reasons
     assert result.effective_obligations == ()
+
+
+@pytest.mark.parametrize(
+    "certainty",
+    ["Certainty.CONFIRMED", "foo.confirmed", "confirmed", ""],
+)
+def test_noncanonical_certainty_is_rejected(certainty: str) -> None:
+    document = "Payment of USD 10.00 is due by 12 September 2026."
+    raw = json.dumps(
+        {
+            "document_summary": "payment",
+            "candidates": [
+                {
+                    "name": "payment",
+                    "amount": "10.00",
+                    "due_date": "2026-09-12",
+                    "currency": "USD",
+                    "certainty": certainty,
+                    "uncertainty_reason": None,
+                    "source_excerpt": document,
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(IntakeBlockedError):
+        parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+
+def test_evidence_mismatch_blocks_entire_run() -> None:
+    document = "Payment of USD 10.00 is due by 12 September 2026."
+    raw = """{
+      "document_summary": "payment",
+      "candidates": [{
+        "name": "payment",
+        "amount": "10.00",
+        "due_date": "2026-09-12",
+        "currency": "USD",
+        "certainty": "CONFIRMED",
+        "uncertainty_reason": null,
+        "source_excerpt": "Payment of USD 999.00 is due tomorrow."
+      }]
+    }"""
+
+    with pytest.raises(IntakeBlockedError, match="MODEL_EVIDENCE_MISMATCH"):
+        parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+
+def test_float_amount_is_rejected() -> None:
+    document = "Payment of USD 10.00 is due by 12 September 2026."
+    raw = json.dumps(
+        {
+            "document_summary": "payment",
+            "candidates": [
+                {
+                    "name": "payment",
+                    "amount": 10.0,
+                    "due_date": "2026-09-12",
+                    "currency": "USD",
+                    "certainty": "CONFIRMED",
+                    "uncertainty_reason": None,
+                    "source_excerpt": document,
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(IntakeBlockedError, match="decimal string"):
+        parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+
+def test_extra_candidate_key_is_rejected() -> None:
+    document = "Payment of USD 10.00 is due by 12 September 2026."
+    raw = json.dumps(
+        {
+            "document_summary": "payment",
+            "candidates": [
+                {
+                    "name": "payment",
+                    "amount": "10.00",
+                    "due_date": "2026-09-12",
+                    "currency": "USD",
+                    "certainty": "CONFIRMED",
+                    "uncertainty_reason": None,
+                    "source_excerpt": document,
+                    "broker_action": "BUY",
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(IntakeBlockedError, match="schema keys"):
+        parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+
+def test_more_than_20_candidates_is_rejected() -> None:
+    document = "Payment of USD 10.00 is due by 12 September 2026."
+    candidate: dict[str, object] = {
+        "name": "payment",
+        "amount": "10.00",
+        "due_date": "2026-09-12",
+        "currency": "USD",
+        "certainty": "CONFIRMED",
+        "uncertainty_reason": None,
+        "source_excerpt": document,
+    }
+    raw = json.dumps(
+        {
+            "document_summary": "payment",
+            "candidates": [dict(candidate) for _ in range(21)],
+        }
+    )
+
+    with pytest.raises(IntakeBlockedError, match="too many candidates"):
+        parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+
+def test_duplicate_normalized_candidate_is_rejected() -> None:
+    document = "Payment of USD 10.00 is due by 12 September 2026."
+    candidate: dict[str, object] = {
+        "name": "payment",
+        "amount": "10.00",
+        "due_date": "2026-09-12",
+        "currency": "USD",
+        "certainty": "CONFIRMED",
+        "uncertainty_reason": None,
+        "source_excerpt": document,
+    }
+    raw = json.dumps(
+        {
+            "document_summary": "payment",
+            "candidates": [dict(candidate), dict(candidate)],
+        }
+    )
+
+    with pytest.raises(IntakeBlockedError, match="duplicate"):
+        parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
