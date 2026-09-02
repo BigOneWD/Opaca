@@ -9,7 +9,11 @@ from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 
-from opaca.intake.models import IntakeBlockedError
+from opaca.intake.models import (
+    MAX_DOCUMENT_CHARS,
+    MAX_MODEL_RESPONSE_CHARS,
+    IntakeBlockedError,
+)
 from opaca.intake.provider import (
     ExtractionUnavailableError,
     FixtureObligationExtractor,
@@ -47,10 +51,24 @@ def _safe_cli_text(value: str) -> str:
     return value.encode("unicode_escape").decode("ascii").replace('"', '\\"')
 
 
+def _read_text_bounded(path: Path, *, max_chars: int, label: str) -> str:
+    with path.open("r", encoding="utf-8") as stream:
+        value = stream.read(max_chars + 1)
+    if len(value) > max_chars:
+        raise ExtractionUnavailableError(f"{label} exceeds size limit")
+    return value
+
+
 def _extractor(provider: str, input_path: Path, fixture_json: Path | None) -> ObligationExtractor:
     if provider == "fixture":
         fixture_path = fixture_json or input_path.with_name("fixture_extraction.json")
-        return FixtureObligationExtractor(raw_json=fixture_path.read_text(encoding="utf-8"))
+        return FixtureObligationExtractor(
+            raw_json=_read_text_bounded(
+                fixture_path,
+                max_chars=MAX_MODEL_RESPONSE_CHARS,
+                label="fixture response",
+            )
+        )
 
     base_url = os.environ.get("OPACA_LLM_BASE_URL", "").strip()
     model = os.environ.get("OPACA_LLM_MODEL", "").strip()
@@ -72,9 +90,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(list(argv) if argv is not None else None)
     input_path: Path = args.input
     as_of = date.fromisoformat(args.as_of)
-    document = input_path.read_text(encoding="utf-8")
 
     try:
+        document = _read_text_bounded(
+            input_path,
+            max_chars=MAX_DOCUMENT_CHARS,
+            label="document",
+        )
         extractor = _extractor(args.provider, input_path, args.fixture_json)
         raw_json = extractor.extract(document, as_of=as_of)
     except ExtractionUnavailableError:

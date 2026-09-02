@@ -14,6 +14,7 @@ from opaca.intake.provider import (
     ObligationExtractor,
     OpenAICompatibleObligationExtractor,
 )
+from opaca.intake.models import MAX_PROVIDER_RESPONSE_BYTES
 
 
 class FakeResponse:
@@ -27,7 +28,8 @@ class FakeResponse:
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         return None
 
-    def read(self) -> bytes:
+    def read(self, size: int = -1) -> bytes:
+        del size
         return self._body
 
 
@@ -35,6 +37,7 @@ class RawResponse:
     def __init__(self, body: bytes, status: int = 200) -> None:
         self._body = body
         self.status = status
+        self.read_size: int | None = None
 
     def __enter__(self) -> "RawResponse":
         return self
@@ -42,7 +45,8 @@ class RawResponse:
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         return None
 
-    def read(self) -> bytes:
+    def read(self, size: int = -1) -> bytes:
+        self.read_size = size
         return self._body
 
 
@@ -68,6 +72,15 @@ class RawUrlOpen:
     def __call__(self, request: Request, *, timeout: float) -> RawResponse:
         del request, timeout
         return RawResponse(self.body)
+
+
+class CapturingRawUrlOpen:
+    def __init__(self, body: bytes) -> None:
+        self.response = RawResponse(body)
+
+    def __call__(self, request: Request, *, timeout: float) -> RawResponse:
+        del request, timeout
+        return self.response
 
 
 class TimeoutUrlOpen:
@@ -244,6 +257,17 @@ def test_oversized_model_response_becomes_intake_unavailable() -> None:
 
     with pytest.raises(ExtractionUnavailableError, match="response exceeds"):
         extractor.extract("No obligations.", as_of=date(2026, 9, 2))
+
+
+def test_provider_reads_only_one_byte_past_response_limit() -> None:
+    body = b"x" * (MAX_PROVIDER_RESPONSE_BYTES + 1)
+    opener = CapturingRawUrlOpen(body)
+    extractor = _extractor(opener)
+
+    with pytest.raises(ExtractionUnavailableError, match="response exceeds"):
+        extractor.extract("No obligations.", as_of=date(2026, 9, 2))
+
+    assert opener.response.read_size == MAX_PROVIDER_RESPONSE_BYTES + 1
 
 
 def test_provider_error_never_leaks_api_key() -> None:

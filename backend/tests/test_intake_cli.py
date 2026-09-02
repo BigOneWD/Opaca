@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from opaca.__main__ import main
 from opaca.intake import cli as intake_cli
+from opaca.intake.models import MAX_DOCUMENT_CHARS, MAX_MODEL_RESPONSE_CHARS
 from opaca.intake.provider import (
     ExtractionUnavailableError,
     OpenAICompatibleObligationExtractor,
@@ -228,6 +229,97 @@ def test_intake_help_discloses_document_delivery_for_non_local_endpoints(
     help_text = captured.out.lower()
     assert "non-local" in help_text
     assert "supplied document" in help_text
+
+
+def test_bounded_text_reader_reads_only_one_character_past_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RecordingReader:
+        def __init__(self) -> None:
+            self.requested_size: int | None = None
+
+        def __enter__(self) -> "RecordingReader":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+        def read(self, size: int) -> str:
+            self.requested_size = size
+            return "x" * size
+
+    reader = RecordingReader()
+
+    def open_reader(
+        self: Path,
+        mode: str = "r",
+        buffering: int = -1,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ) -> RecordingReader:
+        del self, mode, buffering, encoding, errors, newline
+        return reader
+
+    monkeypatch.setattr(Path, "open", open_reader)
+    bounded_reader = getattr(intake_cli, "_read_text_bounded", None)
+    assert callable(bounded_reader)
+
+    with pytest.raises(ExtractionUnavailableError, match="document exceeds"):
+        bounded_reader(Path("document.txt"), max_chars=5, label="document")
+
+    assert reader.requested_size == 6
+
+
+def test_intake_demo_uses_bounded_reads_for_document_and_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[tuple[str, int, Path]] = []
+    document = "Payment of USD 10.00 is due by 12 September 2026."
+    fixture = json.dumps(
+        {
+            "document_summary": "payment",
+            "candidates": [
+                {
+                    "name": "payment",
+                    "amount": "10.00",
+                    "due_date": "2026-09-12",
+                    "currency": "USD",
+                    "certainty": "CONFIRMED",
+                    "uncertainty_reason": None,
+                    "source_excerpt": document,
+                }
+            ],
+        }
+    )
+
+    def bounded_reader(path: Path, *, max_chars: int, label: str) -> str:
+        calls.append((label, max_chars, path))
+        return document if label == "document" else fixture
+
+    monkeypatch.setattr(intake_cli, "_read_text_bounded", bounded_reader)
+
+    rc = main(
+        [
+            "intake-demo",
+            "--input",
+            "/private/tmp/document.txt",
+            "--as-of",
+            "2026-09-02",
+            "--provider",
+            "fixture",
+            "--fixture-json",
+            "/private/tmp/fixture.json",
+        ]
+    )
+    capsys.readouterr()
+
+    assert rc == 1
+    assert calls == [
+        ("document", MAX_DOCUMENT_CHARS, Path("/private/tmp/document.txt")),
+        ("fixture response", MAX_MODEL_RESPONSE_CHARS, Path("/private/tmp/fixture.json")),
+    ]
 
 
 def test_intake_demo_ast_has_no_broker_mutation_gateway() -> None:

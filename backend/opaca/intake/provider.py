@@ -179,7 +179,7 @@ class OpenAICompatibleObligationExtractor:
             with self.opener(request, timeout=30.0) as response:
                 if response.status < 200 or response.status >= 300:
                     raise ExtractionUnavailableError("provider returned non-success status")
-                raw_body = response.read()
+                raw_body = response.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
                 if len(raw_body) > MAX_PROVIDER_RESPONSE_BYTES:
                     raise ExtractionUnavailableError("provider response exceeds size limit")
         except ExtractionUnavailableError:
