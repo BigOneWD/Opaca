@@ -1,4 +1,5 @@
 import json
+import traceback
 from datetime import date
 from typing import Any
 from urllib.request import Request
@@ -194,6 +195,20 @@ def test_provider_error_never_leaks_api_key() -> None:
 
     assert secret not in str(exc_info.value)
     assert secret not in repr(exc_info.value)
+
+
+def test_provider_traceback_never_leaks_api_key_from_exception_cause() -> None:
+    secret = "super-secret"
+    opener = TimeoutUrlOpen(f"transport failed while using {secret}")
+    extractor = _extractor(opener, api_key=secret)
+
+    with pytest.raises(ExtractionUnavailableError) as exc_info:
+        extractor.extract("No obligations.", as_of=date(2026, 9, 2))
+
+    formatted = "".join(
+        traceback.format_exception(exc_info.type, exc_info.value, exc_info.tb)
+    )
+    assert secret not in formatted
 
 
 def test_fixture_extractor_is_explicit_and_satisfies_protocol() -> None:
