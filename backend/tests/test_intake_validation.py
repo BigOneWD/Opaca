@@ -122,6 +122,51 @@ def test_zero_candidates_never_becomes_safe_empty_obligations() -> None:
         parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
 
 
+def test_duplicate_top_level_json_key_is_rejected() -> None:
+    document = "Payment of USD 10.00 is due by 12 September 2026."
+    candidate = json.dumps(
+        {
+            "name": "payment",
+            "amount": "10.00",
+            "due_date": "2026-09-12",
+            "currency": "USD",
+            "certainty": "CONFIRMED",
+            "uncertainty_reason": None,
+            "source_excerpt": document,
+        }
+    )
+    raw = (
+        '{"document_summary":"payment",'
+        '"document_summary":"overwritten payment",'
+        '"candidates":['
+        + candidate
+        + ']}'
+    )
+
+    with pytest.raises(IntakeBlockedError, match="duplicate JSON key"):
+        parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+
+def test_duplicate_candidate_json_key_is_rejected() -> None:
+    document = "Payment of USD 10.00 is due by 12 September 2026."
+    raw = (
+        '{"document_summary":"payment","candidates":[{'
+        '"name":"payment",'
+        '"name":"overwritten payment",'
+        '"amount":"10.00",'
+        '"due_date":"2026-09-12",'
+        '"currency":"USD",'
+        '"certainty":"CONFIRMED",'
+        '"uncertainty_reason":null,'
+        '"source_excerpt":'
+        + json.dumps(document)
+        + '}]}'
+    )
+
+    with pytest.raises(IntakeBlockedError, match="duplicate JSON key"):
+        parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+
 @pytest.mark.parametrize(
     "certainty",
     ["Certainty.CONFIRMED", "foo.confirmed", "confirmed", ""],

@@ -53,6 +53,19 @@ _MONTHS = {
 }
 
 
+class _DuplicateJSONKeyError(ValueError):
+    """Raised when a JSON object repeats a key instead of overwriting it."""
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateJSONKeyError
+        result[key] = value
+    return result
+
+
 def _normalized_newlines(value: str) -> str:
     return value.replace("\r\n", "\n").replace("\r", "\n")
 
@@ -167,7 +180,9 @@ def parse_and_validate_extraction(
 ) -> ObligationIntakeResult:
     """Parse one extraction response and conservatively validate obligations."""
     try:
-        decoded = json.loads(raw_json)
+        decoded = json.loads(raw_json, object_pairs_hook=_reject_duplicate_json_keys)
+    except _DuplicateJSONKeyError:
+        raise IntakeBlockedError("duplicate JSON key") from None
     except json.JSONDecodeError as exc:
         raise IntakeBlockedError("model output is not valid JSON") from exc
     if not isinstance(decoded, dict):
