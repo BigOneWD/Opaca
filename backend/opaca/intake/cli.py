@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from collections.abc import Sequence
 from datetime import date
@@ -23,6 +24,18 @@ from opaca.intake.provider import (
 from opaca.intake.validation import parse_and_validate_extraction, require_effective_obligations
 
 
+_CANONICAL_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def _parse_canonical_date(value: str) -> date:
+    if _CANONICAL_DATE_RE.fullmatch(value) is None:
+        raise argparse.ArgumentTypeError("--as-of must be YYYY-MM-DD")
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("--as-of must be YYYY-MM-DD") from exc
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m opaca intake-demo",
@@ -32,7 +45,7 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--input", type=Path, required=True)
-    parser.add_argument("--as-of", required=True)
+    parser.add_argument("--as-of", required=True, type=_parse_canonical_date)
     parser.add_argument(
         "--provider",
         choices=("fixture", "openai-compatible"),
@@ -89,7 +102,7 @@ def _write_no_mutation_notice() -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(list(argv) if argv is not None else None)
     input_path: Path = args.input
-    as_of = date.fromisoformat(args.as_of)
+    as_of: date = args.as_of
 
     try:
         document = _read_text_bounded(

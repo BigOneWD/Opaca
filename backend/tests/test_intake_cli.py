@@ -16,6 +16,33 @@ from opaca.intake.provider import (
 _FIXTURES = Path(__file__).parent / "fixtures" / "intake"
 
 
+@pytest.mark.parametrize(
+    "as_of",
+    ["20260902", "2026-W36-3", " 2026-09-02", "2026-09-02 ", "2026-02-30"],
+)
+def test_cli_rejects_noncanonical_as_of_without_traceback(
+    as_of: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "intake-demo",
+                "--input",
+                str(_FIXTURES / "messy_obligations.md"),
+                "--as-of",
+                as_of,
+                "--provider",
+                "fixture",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "--as-of must be YYYY-MM-DD" in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_fixture_intake_demo_is_explicit_and_read_only(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
