@@ -30,10 +30,10 @@ amount and due_date are explicitly stated, currency is USD, and no uncertainty
 remains; then uncertainty_reason must be null. Use UNCERTAIN when an obligation is
 plausible but its amount or due_date is missing or uncertain; null is allowed for a
 missing amount or due_date and uncertainty_reason must explain what is unresolved.
-source_excerpt must be an exact excerpt copied from the supplied document. Do not
-guess, infer, calculate, or normalize a missing amount or due date from conventions
-such as net terms unless the source contains every required anchor. Do not make
-trading decisions, authorize orders, size trades, or invent missing obligation facts.
+source_excerpt must be an exact excerpt copied from the supplied document. Do not guess,
+infer, calculate, or normalize a missing amount or due date from conventions such as net
+terms unless the source contains every required anchor. Do not make trading decisions,
+authorize orders, size trades, or invent missing obligation facts.
 """
 _MAX_DOCUMENT_CHARS = 50_000
 
