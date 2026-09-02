@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import date
+from http.client import HTTPException
 from typing import Protocol, cast
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -142,35 +143,34 @@ class OpenAICompatibleObligationExtractor:
         if len(document) > _MAX_DOCUMENT_CHARS:
             raise ExtractionUnavailableError("document exceeds 50000 character limit")
 
-        body = {
-            "model": self.model,
-            "temperature": 0,
-            "messages": [
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": f"As of {as_of.isoformat()}:\n\n{document}",
-                },
-            ],
-        }
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-        request = Request(
-            f"{self.base_url.rstrip('/')}/chat/completions",
-            data=json.dumps(body).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
-
         try:
+            body = {
+                "model": self.model,
+                "temperature": 0,
+                "messages": [
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": f"As of {as_of.isoformat()}:\n\n{document}",
+                    },
+                ],
+            }
+            headers = {"Content-Type": "application/json"}
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            request = Request(
+                f"{self.base_url.rstrip('/')}/chat/completions",
+                data=json.dumps(body).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
             with self.opener(request, timeout=30.0) as response:
                 if response.status < 200 or response.status >= 300:
                     raise ExtractionUnavailableError("provider returned non-success status")
                 raw_body = response.read()
         except ExtractionUnavailableError:
             raise
-        except (TimeoutError, OSError):
+        except (TimeoutError, OSError, HTTPException, ValueError, TypeError):
             raise ExtractionUnavailableError("provider transport unavailable") from None
 
         payload = _parse_response_payload(raw_body)

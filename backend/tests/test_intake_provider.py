@@ -1,4 +1,5 @@
 import json
+from http.client import IncompleteRead
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 import traceback
@@ -78,6 +79,15 @@ class TimeoutUrlOpen:
         del request, timeout
         self.calls += 1
         raise TimeoutError(self.message)
+
+
+class RaisingUrlOpen:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def __call__(self, request: Request, *, timeout: float) -> FakeResponse:
+        del request, timeout
+        raise self.error
 
 
 class RedirectSourceHandler(BaseHTTPRequestHandler):
@@ -287,6 +297,40 @@ def test_provider_does_not_follow_redirect_to_another_origin_with_bearer() -> No
     assert RedirectSourceHandler.authorization == "Bearer redirect-secret"
     assert RedirectTargetHandler.requests == 0
     assert RedirectTargetHandler.authorization is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        IncompleteRead(b"partial response"),
+        ValueError("malformed provider URL"),
+        TypeError("invalid provider request configuration"),
+    ],
+    ids=["incomplete-read", "value-error", "type-error"],
+)
+def test_expected_provider_failures_become_sanitized_unavailable(
+    error: Exception,
+) -> None:
+    extractor = _extractor(RaisingUrlOpen(error))
+
+    with pytest.raises(ExtractionUnavailableError) as exc_info:
+        extractor.extract("No obligations.", as_of=date(2026, 9, 2))
+
+    assert str(exc_info.value) == "provider transport unavailable"
+    assert "partial response" not in str(exc_info.value)
+
+
+def test_malformed_provider_url_becomes_unavailable() -> None:
+    extractor = OpenAICompatibleObligationExtractor(
+        base_url="http://[malformed",
+        model="local-model",
+        api_key="super-secret",
+    )
+
+    with pytest.raises(ExtractionUnavailableError) as exc_info:
+        extractor.extract("No obligations.", as_of=date(2026, 9, 2))
+
+    assert str(exc_info.value) == "provider transport unavailable"
 
 
 def test_fixture_extractor_is_explicit_and_satisfies_protocol() -> None:
