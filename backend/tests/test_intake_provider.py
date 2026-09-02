@@ -7,6 +7,8 @@ import pytest
 
 from opaca.intake.provider import (
     ExtractionUnavailableError,
+    FixtureObligationExtractor,
+    ObligationExtractor,
     OpenAICompatibleObligationExtractor,
 )
 
@@ -87,6 +89,10 @@ def _extractor(
         api_key=api_key,
         opener=opener,
     )
+
+
+def _extract_through_protocol(extractor: ObligationExtractor, document: str) -> str:
+    return extractor.extract(document, as_of=date(2026, 9, 2))
 
 
 def test_openai_compatible_provider_builds_fixed_request_and_returns_json() -> None:
@@ -175,3 +181,11 @@ def test_provider_error_never_leaks_api_key() -> None:
 
     assert secret not in str(exc_info.value)
     assert secret not in repr(exc_info.value)
+
+
+def test_fixture_extractor_is_explicit_and_satisfies_protocol() -> None:
+    raw_json = '{"document_summary":"fixture","candidates":[]}'
+    extractor = FixtureObligationExtractor(raw_json=raw_json)
+
+    assert extractor.provider_name == "fixture"
+    assert _extract_through_protocol(extractor, "Synthetic fixture text.") == raw_json
