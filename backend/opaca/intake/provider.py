@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Protocol, cast
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 _SYSTEM_PROMPT = """You extract corporate cash obligations from supplied text.
 Return exactly one JSON object and nothing else: no Markdown fence and no prose.
@@ -65,8 +65,25 @@ class _UrlOpenLike(Protocol):
     def __call__(self, request: Request, *, timeout: float) -> _ResponseLike: ...
 
 
+class _NoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req: Request,
+        fp: object,
+        code: int,
+        msg: str,
+        headers: object,
+        newurl: str,
+    ) -> Request | None:
+        del req, fp, code, msg, headers, newurl
+        return None
+
+
+_NO_REDIRECT_OPENER = build_opener(_NoRedirectHandler())
+
+
 def _urlopen(request: Request, *, timeout: float) -> _ResponseLike:
-    return cast(_ResponseLike, urlopen(request, timeout=timeout))
+    return cast(_ResponseLike, _NO_REDIRECT_OPENER.open(request, timeout=timeout))
 
 
 def _parse_response_payload(raw_body: bytes) -> dict[str, object]:

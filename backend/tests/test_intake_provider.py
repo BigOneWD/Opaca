@@ -1,7 +1,9 @@
 import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Thread
 import traceback
 from datetime import date
-from typing import Any
+from typing import Any, ClassVar
 from urllib.request import Request
 
 import pytest
@@ -76,6 +78,46 @@ class TimeoutUrlOpen:
         del request, timeout
         self.calls += 1
         raise TimeoutError(self.message)
+
+
+class RedirectSourceHandler(BaseHTTPRequestHandler):
+    authorization: ClassVar[str | None] = None
+    redirect_location: ClassVar[str] = ""
+
+    def do_POST(self) -> None:
+        type(self).authorization = self.headers.get("Authorization")
+        self.send_response(302)
+        self.send_header("Location", type(self).redirect_location)
+        self.end_headers()
+
+    def log_message(self, format: str, *args: object) -> None:
+        del format, args
+
+
+class RedirectTargetHandler(BaseHTTPRequestHandler):
+    requests: ClassVar[int] = 0
+    authorization: ClassVar[str | None] = None
+
+    def _respond(self) -> None:
+        type(self).requests += 1
+        type(self).authorization = self.headers.get("Authorization")
+        body = json.dumps(
+            {"choices": [{"message": {"content": '{"document_summary":"x","candidates":[]}'}}]}
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:
+        self._respond()
+
+    def do_POST(self) -> None:
+        self._respond()
+
+    def log_message(self, format: str, *args: object) -> None:
+        del format, args
 
 
 def _extractor(
@@ -209,6 +251,42 @@ def test_provider_traceback_never_leaks_api_key_from_exception_cause() -> None:
         traceback.format_exception(exc_info.type, exc_info.value, exc_info.tb)
     )
     assert secret not in formatted
+
+
+def test_provider_does_not_follow_redirect_to_another_origin_with_bearer() -> None:
+    source_server = HTTPServer(("127.0.0.1", 0), RedirectSourceHandler)
+    target_server = HTTPServer(("127.0.0.1", 0), RedirectTargetHandler)
+    RedirectSourceHandler.redirect_location = (
+        f"http://127.0.0.1:{target_server.server_port}/redirected"
+    )
+    RedirectSourceHandler.authorization = None
+    RedirectTargetHandler.requests = 0
+    RedirectTargetHandler.authorization = None
+    source_thread = Thread(target=source_server.serve_forever, daemon=True)
+    target_thread = Thread(target=target_server.serve_forever, daemon=True)
+    source_thread.start()
+    target_thread.start()
+
+    try:
+        extractor = OpenAICompatibleObligationExtractor(
+            base_url=f"http://127.0.0.1:{source_server.server_port}/v1",
+            model="local-model",
+            api_key="redirect-secret",
+        )
+
+        with pytest.raises(ExtractionUnavailableError):
+            extractor.extract("No obligations.", as_of=date(2026, 9, 2))
+    finally:
+        source_server.shutdown()
+        target_server.shutdown()
+        source_server.server_close()
+        target_server.server_close()
+        source_thread.join()
+        target_thread.join()
+
+    assert RedirectSourceHandler.authorization == "Bearer redirect-secret"
+    assert RedirectTargetHandler.requests == 0
+    assert RedirectTargetHandler.authorization is None
 
 
 def test_fixture_extractor_is_explicit_and_satisfies_protocol() -> None:
