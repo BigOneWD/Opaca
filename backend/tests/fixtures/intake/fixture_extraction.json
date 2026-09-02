@@ -1,0 +1,23 @@
+{
+  "document_summary": "September cash planning note with payroll and a vendor invoice requiring date review",
+  "candidates": [
+    {
+      "name": "September payroll batch",
+      "amount": "240000.00",
+      "due_date": "2026-09-12",
+      "currency": "USD",
+      "certainty": "CONFIRMED",
+      "uncertainty_reason": null,
+      "source_excerpt": "September payroll batch: Payment of USD 240,000.00 is due by 12 September 2026."
+    },
+    {
+      "name": "Vendor support renewal",
+      "amount": "80000.00",
+      "due_date": null,
+      "currency": "USD",
+      "certainty": "UNCERTAIN",
+      "uncertainty_reason": "Receipt date is not stated, so the net-30 due date cannot be derived safely",
+      "source_excerpt": "Vendor support renewal: Invoice total: USD 80,000. Terms: net 30 from receipt. Receipt date is not recorded in this note."
+    }
+  ]
+}
