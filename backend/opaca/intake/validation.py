@@ -10,7 +10,7 @@ from decimal import Decimal, InvalidOperation
 from typing import cast
 
 from opaca.domain.models import Obligation
-from opaca.domain.money import ZERO
+from opaca.domain.money import ZERO, MoneyError, positive_money
 from opaca.intake.models import (
     Certainty,
     IntakeBlockedError,
@@ -77,7 +77,10 @@ def _parse_positive_decimal(value: object) -> Decimal:
         raise IntakeBlockedError("amount is not a valid decimal") from exc
     if not parsed.is_finite() or parsed <= ZERO:
         raise IntakeBlockedError("amount must be positive and finite")
-    return parsed
+    try:
+        return positive_money(parsed)
+    except MoneyError:
+        raise IntakeBlockedError("amount is outside the supported monetary range") from None
 
 
 def _parse_iso_date(value: object) -> date:

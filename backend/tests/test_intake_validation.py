@@ -224,6 +224,30 @@ def test_float_amount_is_rejected() -> None:
         parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
 
 
+def test_oversized_amount_becomes_intake_blocked() -> None:
+    amount = "100000000000000000000000000"
+    document = f"Payment of USD {amount} is due by 12 September 2026."
+    raw = json.dumps(
+        {
+            "document_summary": "oversized payment",
+            "candidates": [
+                {
+                    "name": "oversized payment",
+                    "amount": amount,
+                    "due_date": "2026-09-12",
+                    "currency": "USD",
+                    "certainty": "CONFIRMED",
+                    "uncertainty_reason": None,
+                    "source_excerpt": document,
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(IntakeBlockedError, match="amount"):
+        parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+
 def test_extra_candidate_key_is_rejected() -> None:
     document = "Payment of USD 10.00 is due by 12 September 2026."
     raw = json.dumps(
