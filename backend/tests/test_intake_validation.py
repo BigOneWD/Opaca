@@ -124,25 +124,22 @@ def test_zero_candidates_never_becomes_safe_empty_obligations() -> None:
 
 def test_oversized_fixture_response_is_blocked() -> None:
     document = "A regulatory payment is due this month; amount pending assessment."
-    raw = (
-        json.dumps(
-            {
-                "document_summary": "unquantified note",
-                "candidates": [
-                    {
-                        "name": "unquantified note",
-                        "amount": None,
-                        "due_date": None,
-                        "currency": "USD",
-                        "certainty": "UNCERTAIN",
-                        "uncertainty_reason": "Amount is not stated",
-                        "source_excerpt": document,
-                    }
-                ],
-            }
-        )
-        + (" " * 100_001)
-    )
+    raw = json.dumps(
+        {
+            "document_summary": "unquantified note",
+            "candidates": [
+                {
+                    "name": "unquantified note",
+                    "amount": None,
+                    "due_date": None,
+                    "currency": "USD",
+                    "certainty": "UNCERTAIN",
+                    "uncertainty_reason": "Amount is not stated",
+                    "source_excerpt": document,
+                }
+            ],
+        }
+    ) + (" " * 100_001)
 
     with pytest.raises(IntakeBlockedError, match="model output exceeds"):
         parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
@@ -228,9 +225,7 @@ def test_duplicate_top_level_json_key_is_rejected() -> None:
     raw = (
         '{"document_summary":"payment",'
         '"document_summary":"overwritten payment",'
-        '"candidates":['
-        + candidate
-        + ']}'
+        '"candidates":[' + candidate + "]}"
     )
 
     with pytest.raises(IntakeBlockedError, match="duplicate JSON key"):
@@ -248,9 +243,7 @@ def test_duplicate_candidate_json_key_is_rejected() -> None:
         '"currency":"USD",'
         '"certainty":"CONFIRMED",'
         '"uncertainty_reason":null,'
-        '"source_excerpt":'
-        + json.dumps(document)
-        + '}]}'
+        '"source_excerpt":' + json.dumps(document) + "}]}"
     )
 
     with pytest.raises(IntakeBlockedError, match="duplicate JSON key"):

@@ -1,9 +1,9 @@
 import json
+import traceback
+from datetime import date
 from http.client import IncompleteRead
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
-import traceback
-from datetime import date
 from typing import Any, ClassVar
 from urllib.request import Request
 
@@ -131,7 +131,7 @@ class RedirectTargetHandler(BaseHTTPRequestHandler):
 
 
 def _extractor(
-    opener: FakeUrlOpen | RawUrlOpen | TimeoutUrlOpen,
+    opener: FakeUrlOpen | RawUrlOpen | TimeoutUrlOpen | RaisingUrlOpen,
     *,
     api_key: str = "super-secret",
 ) -> OpenAICompatibleObligationExtractor:
@@ -239,9 +239,7 @@ def test_oversize_document_never_calls_network() -> None:
 
 def test_oversized_model_response_becomes_intake_unavailable() -> None:
     oversized_content = "x" * 100_001
-    body = json.dumps(
-        {"choices": [{"message": {"content": oversized_content}}]}
-    ).encode("utf-8")
+    body = json.dumps({"choices": [{"message": {"content": oversized_content}}]}).encode("utf-8")
     extractor = _extractor(RawUrlOpen(body))
 
     with pytest.raises(ExtractionUnavailableError, match="response exceeds"):
@@ -268,9 +266,7 @@ def test_provider_traceback_never_leaks_api_key_from_exception_cause() -> None:
     with pytest.raises(ExtractionUnavailableError) as exc_info:
         extractor.extract("No obligations.", as_of=date(2026, 9, 2))
 
-    formatted = "".join(
-        traceback.format_exception(exc_info.type, exc_info.value, exc_info.tb)
-    )
+    formatted = "".join(traceback.format_exception(exc_info.type, exc_info.value, exc_info.tb))
     assert secret not in formatted
 
 

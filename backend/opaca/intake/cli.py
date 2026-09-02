@@ -9,13 +9,14 @@ from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 
+from opaca.intake.models import IntakeBlockedError
 from opaca.intake.provider import (
     ExtractionUnavailableError,
     FixtureObligationExtractor,
     ObligationExtractor,
     OpenAICompatibleObligationExtractor,
 )
-from opaca.intake.validation import IntakeBlockedError, parse_and_validate_extraction
+from opaca.intake.validation import parse_and_validate_extraction
 
 
 def _parser() -> argparse.ArgumentParser:

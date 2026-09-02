@@ -12,14 +12,14 @@ from typing import cast
 from opaca.domain.models import Obligation
 from opaca.domain.money import ZERO, MoneyError, positive_money
 from opaca.intake.models import (
-    Certainty,
-    IntakeBlockedError,
     MAX_CANDIDATE_NAME_CHARS,
     MAX_DOCUMENT_CHARS,
     MAX_DOCUMENT_SUMMARY_CHARS,
     MAX_MODEL_RESPONSE_CHARS,
     MAX_SOURCE_EXCERPT_CHARS,
     MAX_UNCERTAINTY_REASON_CHARS,
+    Certainty,
+    IntakeBlockedError,
     ObligationIntakeResult,
     ValidatedCandidate,
 )
@@ -34,9 +34,7 @@ _CANDIDATE_KEYS = {
     "uncertainty_reason",
     "source_excerpt",
 }
-_MONEY_ANCHOR_RE = re.compile(
-    r"\bUSD[ \t]+(?P<amount>(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\b"
-)
+_MONEY_ANCHOR_RE = re.compile(r"\bUSD[ \t]+(?P<amount>(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\b")
 _CANONICAL_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _ISO_DATE_ANCHOR_RE = re.compile(r"(?<!\d)(?P<value>\d{4}-\d{2}-\d{2})(?!\d)")
 _LONG_DATE_ANCHOR_RE = re.compile(

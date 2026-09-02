@@ -202,7 +202,7 @@ def test_candidate_control_characters_are_escaped_in_cli_output(
     assert "\x1b" not in captured.out
     assert "NAME: pay\nSTATUS: CONFIRMED" not in captured.out
     assert "NAME: pay\\nSTATUS: CONFIRMED" in captured.out
-    assert "EVIDENCE: \"Payment of USD 10.00 is due by 12 September 2026.\\x1b[31m\"" in captured.out
+    assert 'EVIDENCE: "Payment of USD 10.00 is due by 12 September 2026.\\x1b[31m"' in captured.out
 
 
 @pytest.mark.parametrize("missing_name", ["OPACA_LLM_BASE_URL", "OPACA_LLM_MODEL"])

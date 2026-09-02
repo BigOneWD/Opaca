@@ -9,7 +9,6 @@ from enum import StrEnum
 
 from opaca.domain.models import Obligation
 
-
 MAX_DOCUMENT_CHARS = 50_000
 MAX_MODEL_RESPONSE_CHARS = 100_000
 MAX_PROVIDER_RESPONSE_BYTES = 400_000
