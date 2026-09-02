@@ -63,6 +63,29 @@ def test_uncertain_known_amount_is_reserved_immediately() -> None:
     assert result.trade_blocked is False
 
 
+def test_uncertain_known_amount_must_be_supported_by_exact_evidence() -> None:
+    document = "Invoice total: USD 80,000. Terms: net 30 from receipt."
+    raw = json.dumps(
+        {
+            "document_summary": "Vendor invoice",
+            "candidates": [
+                {
+                    "name": "Vendor invoice",
+                    "amount": "1.00",
+                    "due_date": None,
+                    "currency": "USD",
+                    "certainty": "UNCERTAIN",
+                    "uncertainty_reason": "Receipt date is not stated",
+                    "source_excerpt": document,
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(IntakeBlockedError, match="MODEL_EVIDENCE_VALUE_MISMATCH"):
+        parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+
 def test_unquantified_obligation_blocks_downstream_use() -> None:
     document = "A regulatory payment is due this month; amount pending assessment."
     raw = """{
