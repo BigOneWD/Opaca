@@ -223,6 +223,8 @@ def parse_and_validate_extraction(
     as_of: date,
 ) -> ObligationIntakeResult:
     """Parse one extraction response and conservatively validate obligations."""
+    if type(as_of) is not date:
+        raise IntakeBlockedError("as_of must be an exact date")
     if len(document) > MAX_DOCUMENT_CHARS:
         raise IntakeBlockedError("document exceeds size limit")
     if len(raw_json) > MAX_MODEL_RESPONSE_CHARS:

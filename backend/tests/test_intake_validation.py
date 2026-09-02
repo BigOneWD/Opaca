@@ -1,5 +1,5 @@
 import json
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
@@ -488,6 +488,33 @@ def test_multiple_due_dates_remain_ambiguous() -> None:
 
     with pytest.raises(IntakeBlockedError, match="MODEL_EVIDENCE_VALUE_MISMATCH"):
         parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+
+@pytest.mark.parametrize(
+    "as_of",
+    ["2026-09-02", 123, datetime(2026, 9, 2), None],
+)
+def test_runtime_as_of_must_be_an_exact_date(as_of: object) -> None:
+    document = "Payment of USD 10.00 has an unresolved due date."
+    raw = json.dumps(
+        {
+            "document_summary": "payment",
+            "candidates": [
+                {
+                    "name": "payment",
+                    "amount": "10.00",
+                    "due_date": None,
+                    "currency": "USD",
+                    "certainty": "UNCERTAIN",
+                    "uncertainty_reason": "Due date is not stated",
+                    "source_excerpt": document,
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(IntakeBlockedError, match="as_of must be an exact date"):
+        parse_and_validate_extraction(document, raw, as_of=as_of)  # type: ignore[arg-type]
 
 
 def test_float_amount_is_rejected() -> None:
