@@ -108,6 +108,19 @@ def test_unquantified_obligation_blocks_downstream_use() -> None:
     assert result.effective_obligations == ()
 
 
+def test_zero_candidates_never_becomes_safe_empty_obligations() -> None:
+    document = "Quarterly tax payment of USD 500,000.00 is due by 30 September 2026."
+    raw = json.dumps(
+        {
+            "document_summary": "Quarterly tax notice",
+            "candidates": [],
+        }
+    )
+
+    with pytest.raises(IntakeBlockedError, match="ZERO_CANDIDATES_UNVERIFIED"):
+        parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+
 @pytest.mark.parametrize(
     "certainty",
     ["Certainty.CONFIRMED", "foo.confirmed", "confirmed", ""],
