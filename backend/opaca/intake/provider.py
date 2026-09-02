@@ -19,6 +19,14 @@ class ExtractionUnavailableError(RuntimeError):
     """Raised when obligation extraction cannot produce a usable raw response."""
 
 
+class ObligationExtractor(Protocol):
+    """Structural interface shared by real and fixture extraction providers."""
+
+    provider_name: str
+
+    def extract(self, document: str, *, as_of: date) -> str: ...
+
+
 class _ResponseLike(Protocol):
     status: int
 
@@ -65,6 +73,18 @@ def _assistant_content(payload: dict[str, object]) -> str:
     if not isinstance(content, str):
         raise ExtractionUnavailableError("provider response missing assistant content")
     return content
+
+
+@dataclass(frozen=True)
+class FixtureObligationExtractor:
+    """Deterministic offline extractor that is always visibly fixture-backed."""
+
+    raw_json: str
+    provider_name: str = field(default="fixture", init=False)
+
+    def extract(self, document: str, *, as_of: date) -> str:
+        del document, as_of
+        return self.raw_json
 
 
 @dataclass(frozen=True)
