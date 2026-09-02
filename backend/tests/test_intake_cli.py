@@ -155,6 +155,39 @@ def test_provider_failure_is_unavailable_and_never_leaks_api_key(
     assert "BROKER MUTATION: NOT AVAILABLE IN THIS COMMAND" in captured.out
 
 
+@pytest.mark.parametrize("missing_name", ["OPACA_LLM_BASE_URL", "OPACA_LLM_MODEL"])
+def test_missing_real_provider_config_is_intake_unavailable(
+    missing_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("OPACA_LLM_BASE_URL", "http://127.0.0.1:8080/v1")
+    monkeypatch.setenv("OPACA_LLM_MODEL", "local-model")
+    monkeypatch.delenv(missing_name, raising=False)
+    monkeypatch.delenv("OPACA_LLM_API_KEY", raising=False)
+
+    try:
+        rc = main(
+            [
+                "intake-demo",
+                "--input",
+                str(_FIXTURES / "messy_obligations.md"),
+                "--as-of",
+                "2026-09-02",
+                "--provider",
+                "openai-compatible",
+            ]
+        )
+    except BaseException as exc:  # pragma: no cover - RED guard against config tracebacks
+        pytest.fail(f"intake-demo leaked {type(exc).__name__}: {exc}")
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert captured.err == ""
+    assert "INTAKE UNAVAILABLE" in captured.out
+    assert "BROKER MUTATION: NOT AVAILABLE IN THIS COMMAND" in captured.out
+
+
 def test_intake_help_discloses_document_delivery_for_non_local_endpoints(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
