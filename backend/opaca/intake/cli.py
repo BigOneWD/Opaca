@@ -3,20 +3,36 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 
-from opaca.intake.provider import FixtureObligationExtractor
-from opaca.intake.validation import parse_and_validate_extraction
+from opaca.intake.provider import (
+    ExtractionUnavailableError,
+    FixtureObligationExtractor,
+    ObligationExtractor,
+    OpenAICompatibleObligationExtractor,
+)
+from opaca.intake.validation import IntakeBlockedError, parse_and_validate_extraction
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="python -m opaca intake-demo")
+    parser = argparse.ArgumentParser(
+        prog="python -m opaca intake-demo",
+        description=(
+            "Read-only obligation extraction demo. When an openai-compatible endpoint is "
+            "non-local, the supplied document is sent to that configured endpoint."
+        ),
+    )
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--as-of", required=True)
-    parser.add_argument("--provider", choices=("fixture",), required=True)
+    parser.add_argument(
+        "--provider",
+        choices=("fixture", "openai-compatible"),
+        required=True,
+    )
     parser.add_argument("--fixture-json", type=Path)
     return parser
 
@@ -25,16 +41,42 @@ def _format_date(value: date | None) -> str:
     return "n/a" if value is None else value.isoformat()
 
 
+def _extractor(provider: str, input_path: Path, fixture_json: Path | None) -> ObligationExtractor:
+    if provider == "fixture":
+        fixture_path = fixture_json or input_path.with_name("fixture_extraction.json")
+        return FixtureObligationExtractor(raw_json=fixture_path.read_text(encoding="utf-8"))
+    return OpenAICompatibleObligationExtractor(
+        base_url=os.environ["OPACA_LLM_BASE_URL"],
+        model=os.environ["OPACA_LLM_MODEL"],
+        api_key=os.environ.get("OPACA_LLM_API_KEY", ""),
+    )
+
+
+def _write_no_mutation_notice() -> None:
+    sys.stdout.write("BROKER MUTATION: NOT AVAILABLE IN THIS COMMAND\n")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(list(argv) if argv is not None else None)
     input_path: Path = args.input
     as_of = date.fromisoformat(args.as_of)
     document = input_path.read_text(encoding="utf-8")
+    extractor = _extractor(args.provider, input_path, args.fixture_json)
 
-    fixture_json: Path = args.fixture_json or input_path.with_name("fixture_extraction.json")
-    extractor = FixtureObligationExtractor(raw_json=fixture_json.read_text(encoding="utf-8"))
-    raw_json = extractor.extract(document, as_of=as_of)
-    result = parse_and_validate_extraction(document, raw_json, as_of=as_of)
+    try:
+        raw_json = extractor.extract(document, as_of=as_of)
+    except ExtractionUnavailableError:
+        sys.stdout.write("INTAKE UNAVAILABLE\n")
+        _write_no_mutation_notice()
+        return 1
+
+    try:
+        result = parse_and_validate_extraction(document, raw_json, as_of=as_of)
+    except IntakeBlockedError as exc:
+        sys.stdout.write("INTAKE BLOCKED\n")
+        sys.stdout.write(f"BLOCK REASON: {exc}\n")
+        _write_no_mutation_notice()
+        return 1
 
     out = sys.stdout
     out.write("AI OBLIGATION INTAKE\n")
@@ -58,5 +100,5 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     out.write(f"\nUNCERTAIN RESERVED AMOUNT: {result.uncertain_reserved_amount}\n")
     out.write(f"TRADE BLOCKED: {'YES' if result.trade_blocked else 'NO'}\n")
-    out.write("BROKER MUTATION: NOT AVAILABLE IN THIS COMMAND\n")
+    _write_no_mutation_notice()
     return 0
