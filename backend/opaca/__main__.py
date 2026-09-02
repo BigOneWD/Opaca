@@ -1,4 +1,4 @@
-"""Opaca CLI. Read-only preflight is the only command in this phase."""
+"""Opaca command-line entry point."""
 
 from __future__ import annotations
 
@@ -10,18 +10,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args or args[0] in {"-h", "--help"}:
         sys.stdout.write(
-            "usage: python -m opaca preflight [--db PATH] [--overwrite-db]\n"
+            "usage: python -m opaca <command> [options]\n"
             "\n"
-            "preflight  read-only PAPER checks; never submits or cancels\n"
+            "preflight    read-only PAPER checks; never submits or cancels\n"
+            "intake-demo  read-only AI obligation intake; no broker mutation capability\n"
         )
         return 0
-    command, rest = args[0], args[1:]
-    if command != "preflight":
-        sys.stderr.write(f"unknown command {command!r}; try preflight\n")
-        return 2
-    from opaca.preflight import main as preflight_main
 
-    return preflight_main(rest)
+    command, rest = args[0], args[1:]
+    if command == "preflight":
+        from opaca.preflight import main as preflight_main
+
+        return preflight_main(rest)
+    if command == "intake-demo":
+        from opaca.intake.cli import main as intake_demo_main
+
+        return intake_demo_main(rest)
+
+    sys.stderr.write(f"unknown command {command!r}; try --help\n")
+    return 2
 
 
 if __name__ == "__main__":
