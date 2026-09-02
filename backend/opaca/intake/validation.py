@@ -112,6 +112,7 @@ def parse_and_validate_extraction(
     source_sha256 = hashlib.sha256(normalized_document.encode("utf-8")).hexdigest()
     candidates: list[ValidatedCandidate] = []
     obligations: list[Obligation] = []
+    seen_candidate_ids: set[str] = set()
     uncertain_reserved_amount = ZERO
     block_reasons: list[str] = []
 
@@ -164,6 +165,10 @@ def parse_and_validate_extraction(
             stated_due_date,
             certainty,
         )
+        if candidate_id in seen_candidate_ids:
+            raise IntakeBlockedError("duplicate candidate")
+        seen_candidate_ids.add(candidate_id)
+
         validated = ValidatedCandidate(
             candidate_id=candidate_id,
             name=name,
