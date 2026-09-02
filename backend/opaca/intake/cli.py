@@ -21,7 +21,7 @@ from opaca.intake.provider import (
     ObligationExtractor,
     OpenAICompatibleObligationExtractor,
 )
-from opaca.intake.validation import parse_and_validate_extraction, require_effective_obligations
+from opaca.intake.validation import parse_and_validate_extraction
 
 _CANONICAL_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
@@ -118,7 +118,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         result = parse_and_validate_extraction(document, raw_json, as_of=as_of)
-        require_effective_obligations(result)
     except IntakeBlockedError as exc:
         sys.stdout.write("INTAKE BLOCKED\n")
         sys.stdout.write(f"BLOCK REASON: {exc}\n")
@@ -150,5 +149,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     out.write(f"TRADE BLOCKED: {'YES' if result.trade_blocked else 'NO'}\n")
     for reason in result.block_reasons:
         out.write(f"BLOCK REASON: {reason}\n")
+    out.write("\nCOMPLETENESS REVIEW: REQUIRED\n")
+    out.write("TREASURY HANDOFF: BLOCKED\n")
+    out.write("HANDOFF REASON: COMPLETENESS_REVIEW_REQUIRED\n")
     _write_no_mutation_notice()
     return 0

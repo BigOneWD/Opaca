@@ -61,10 +61,14 @@ def test_fixture_intake_demo_is_explicit_and_read_only(
     )
 
     captured = capsys.readouterr()
-    assert rc == 1
+    assert rc == 0
     assert captured.err == ""
-    assert "INTAKE BLOCKED" in captured.out
-    assert "COMPLETENESS_REVIEW_REQUIRED" in captured.out
+    assert "CANDIDATE 1" in captured.out
+    assert "STATUS: CONFIRMED" in captured.out
+    assert "NAME: September payroll batch" in captured.out
+    assert "COMPLETENESS REVIEW: REQUIRED" in captured.out
+    assert "TREASURY HANDOFF: BLOCKED" in captured.out
+    assert "HANDOFF REASON: COMPLETENESS_REVIEW_REQUIRED" in captured.out
     assert "BROKER MUTATION: NOT AVAILABLE IN THIS COMMAND" in captured.out
 
 
@@ -84,10 +88,14 @@ def test_fixture_intake_demo_requires_completeness_review(
     )
 
     captured = capsys.readouterr()
-    assert rc == 1
-    assert "INTAKE BLOCKED" in captured.out
-    assert "COMPLETENESS_REVIEW_REQUIRED" in captured.out
-    assert "TRADE BLOCKED: NO" not in captured.out
+    assert rc == 0
+    assert "CANDIDATE 2" in captured.out
+    assert "NAME: Vendor support renewal" in captured.out
+    assert "STATUS: UNCERTAIN" in captured.out
+    assert "RESERVED CONSERVATIVELY: YES" in captured.out
+    assert "COMPLETENESS REVIEW: REQUIRED" in captured.out
+    assert "TREASURY HANDOFF: BLOCKED" in captured.out
+    assert "HANDOFF REASON: COMPLETENESS_REVIEW_REQUIRED" in captured.out
     assert "BROKER MUTATION: NOT AVAILABLE IN THIS COMMAND" in captured.out
 
 
@@ -116,10 +124,14 @@ def test_unquantified_fixture_surfaces_block_reason(
     )
 
     captured = capsys.readouterr()
-    assert rc == 1
+    assert rc == 0
     assert captured.err == ""
-    assert "INTAKE BLOCKED" in captured.out
+    assert "CANDIDATE 1" in captured.out
+    assert "NAME: Regulatory payment" in captured.out
+    assert "STATUS: UNCERTAIN" in captured.out
     assert "UNQUANTIFIED_OBLIGATION" in captured.out
+    assert "COMPLETENESS REVIEW: REQUIRED" in captured.out
+    assert "TREASURY HANDOFF: BLOCKED" in captured.out
     assert "BROKER MUTATION: NOT AVAILABLE IN THIS COMMAND" in captured.out
 
 
@@ -154,6 +166,7 @@ def test_evidence_mismatch_becomes_intake_blocked(
     assert rc == 1
     assert "INTAKE BLOCKED" in captured.out
     assert "MODEL_EVIDENCE_MISMATCH" in captured.out
+    assert "TREASURY HANDOFF: AUTHORIZED" not in captured.out
     assert "BROKER MUTATION: NOT AVAILABLE IN THIS COMMAND" in captured.out
 
 
@@ -342,7 +355,7 @@ def test_intake_demo_uses_bounded_reads_for_document_and_fixture(
     )
     capsys.readouterr()
 
-    assert rc == 1
+    assert rc == 0
     assert calls == [
         ("document", MAX_DOCUMENT_CHARS, Path("/private/tmp/document.txt")),
         ("fixture response", MAX_MODEL_RESPONSE_CHARS, Path("/private/tmp/fixture.json")),
@@ -378,3 +391,15 @@ def test_intake_demo_ast_has_no_broker_mutation_gateway() -> None:
 
     assert imported_modules.isdisjoint(forbidden_modules)
     assert referenced_symbols.isdisjoint(forbidden_symbols)
+
+
+def test_intake_demo_has_no_completeness_bypass() -> None:
+    source = inspect.getsource(intake_cli)
+    tree = ast.parse(source)
+
+    assert "--approve" not in source
+    assert "--confirm" not in source
+    assert "confirm_intake_completeness" not in source
+
+    referenced_symbols = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    assert "confirm_intake_completeness" not in referenced_symbols
