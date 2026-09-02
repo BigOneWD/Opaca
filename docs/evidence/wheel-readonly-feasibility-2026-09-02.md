@@ -71,53 +71,62 @@ tool was invoked.
 
 ## MCP
 
-- installed/configured: no
+- installed/configured: yes at the Codex registration layer; fresh-session tool enumeration is pending
+- official server: Alpaca MCP Server V2 `2.3.1` (resolved through `uvx`)
 - local Codex MCP configuration inspected: `/Users/macmini/.codex/config.toml`
-- configured local MCP server sections: `computer-use`, `node_repl`
-- Alpaca MCP configuration entry present: no
+- configuration method: `codex mcp add alpaca-readonly -- /Users/macmini/.local/bin/opaca-alpaca-mcp-readonly`
+- `codex mcp get alpaca-readonly`: enabled; stdio; launcher command above; no Codex-config credential environment values
+- configured local MCP server sections in the file: `alpaca-readonly`, `computer-use`, `node_repl`
+- other `codex mcp list` entries observed: `cua_repl` (app-managed), plus the three file entries above; existing entries were not changed
+- Alpaca MCP configuration entry present: yes
+- launcher path: `/Users/macmini/.local/bin/opaca-alpaca-mcp-readonly`
+- launcher permissions: `700`
+- launcher source credential mapping: `APCA_API_KEY_ID` -> `ALPACA_API_KEY`; `APCA_API_SECRET_KEY` -> `ALPACA_SECRET_KEY`; values are loaded only at runtime
+- `ALPACA_PAPER_TRADE`: `true` (hard-set by launcher; value verified by source inspection)
+- `ALPACA_TOOLSETS`: `assets,stock-data,options-data,news` (hard-set by launcher; exact value verified by source inspection)
 - `alpaca_mcp_server` package present in the project virtual environment: no
-- `uvx` executable present: yes, but the Alpaca MCP server was not invoked or installed
-- enabled tool names containing `alpaca`: none
-- exact exposed Alpaca tool names: none available to enumerate because no Alpaca server is configured
-- exact locally exposed read-only tools: none
-- mutation-capable tools exposed locally: no; no Alpaca server is exposed
+- `uvx` executable present: yes; official Alpaca MCP Server V2 `2.3.1` was resolved in its isolated UV environment
+- enabled tool names containing `alpaca` in this current Codex session: none (session has not been refreshed)
+- exact exposed Alpaca tool names: pending fresh Codex session; not available from the current session inventory
+- exact locally exposed read-only tools: pending fresh Codex session
+- mutation-capable tools exposed locally: none observed in the current session; this remains unproven until fresh-session enumeration
 - no mutation tools were invoked
 
-The official Alpaca MCP V2 documentation identifies the local server as
-`uvx alpaca-mcp-server`. For a future strict observation lane, the smallest
-documented toolset configuration for this project is:
+The Codex CLI's actual supported configuration is a global stdio server
+registration. The persisted entry is equivalent to:
 
 ```toml
 [mcp_servers.alpaca-readonly]
-command = "uvx"
-args = ["alpaca-mcp-server"]
-
-[mcp_servers.alpaca-readonly.env]
-ALPACA_API_KEY = "<secure mapping of APCA_API_KEY_ID>"
-ALPACA_SECRET_KEY = "<secure mapping of APCA_API_SECRET_KEY>"
-ALPACA_PAPER_TRADE = "true"
-ALPACA_TOOLSETS = "assets,stock-data,options-data,news"
+command = "/Users/macmini/.local/bin/opaca-alpaca-mcp-readonly"
 ```
 
-After activation and client restart, the exact server-emitted names must be
-captured and committed as `MCP_ALLOWED_TOOLS`. Based on the official V2 tool
-registry, the read-only candidate names for those toolsets are:
+The external launcher contains the runtime-only mapping and exact policy:
+
+```text
+ALPACA_PAPER_TRADE=true
+ALPACA_TOOLSETS=assets,stock-data,options-data,news
+exec /Users/macmini/.local/bin/uvx alpaca-mcp-server
+```
+
+After a fresh Codex session, the exact server-emitted names must be captured
+and committed as `MCP_ALLOWED_TOOLS`. The documented V2 candidate names for
+the four configured toolsets are:
 
 - assets: `get_all_assets`, `get_asset`, `get_option_contracts`, `get_option_contract`, `get_calendar`, `get_clock`, `get_corporate_action_announcements`, `get_corporate_action_announcement`
 - stock-data: `get_stock_bars`, `get_stock_quotes`, `get_stock_trades`, `get_stock_latest_bar`, `get_stock_latest_quote`, `get_stock_latest_trade`, `get_stock_snapshot`, `get_most_active_stocks`, `get_market_movers`
 - options-data: `get_option_bars`, `get_option_trades`, `get_option_latest_trade`, `get_option_latest_quote`, `get_option_snapshot`, `get_option_chain`, `get_option_exchange_codes`
 - news: `get_news`
 
-These are documented candidates, not locally exposed names. The official
-server's unfiltered surface also includes mutation-capable tools such as
+These remain documented candidates, not locally exposed names, until the
+fresh session enumerates them. The official server's unfiltered surface also includes mutation-capable tools such as
 `place_option_order`, `cancel_order_by_id`, `replace_order_by_id`,
 `exercise_options_position`, and account/position mutation tools; they were
 not enabled or invoked in this probe.
 
 Strict read-only allowlist technically enforceable: yes in the documented V2
 design through `ALPACA_TOOLSETS` plus an exact application-side allowlist, but
-not locally verified until the server is configured and its actual tool list
-is enumerated.
+not yet proven in Codex because the current session has not refreshed its MCP
+inventory.
 
 Official setup references:
 
@@ -130,12 +139,12 @@ BLOCKED BEFORE TASK 2
 
 Concrete blockers:
 
-1. Alpaca MCP is not installed/configured in the local Codex agent, so the exact exposed read-only tool surface cannot yet be enumerated or frozen into `MCP_ALLOWED_TOOLS`.
+1. The server is configured, but the current Codex session has not refreshed its MCP inventory, so the exact exposed read-only tool surface cannot yet be enumerated or frozen into `MCP_ALLOWED_TOOLS`. `codex mcp` exposes no reload command; fully quit and reopen Codex, or start a fresh Codex task/session, then enumerate the Alpaca tools before starting Task 2.
 2. OPRA option quotes are unavailable for this account because the OPRA agreement/entitlement is not signed. A read-only indicative quote is available, but execution-quality quote semantics remain to be resolved before later policy/execution work.
 
-Smallest next action: explicitly configure the official local V2 server with
-`ALPACA_PAPER_TRADE=true` and the minimal read-only toolsets
-`assets,stock-data,options-data,news`, restart/reload the MCP client, enumerate
-the actual emitted names, and verify no mutation tool is exposed. Separately
-confirm the permitted option quote feed/entitlement before any later execution
-task. Do not start Task 2 until those observations are captured.
+Smallest next action: fully quit and reopen Codex (or create a fresh Codex
+session), enumerate the actual Alpaca MCP tools, verify that every exposed
+tool belongs only to `assets`, `stock-data`, `options-data`, or `news`, and
+record the result. Separately confirm the permitted option quote feed before
+any later execution task. Do not start Task 2 until MCP tool-surface
+verification is captured.
