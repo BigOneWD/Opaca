@@ -7,13 +7,13 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
 from opaca.domain.money import positive_money
-from opaca.persistence.codec import dump_datetime, dump_decimal, load_decimal
-from opaca.wheel.models import WheelShareLot
+from opaca.persistence.codec import dump_datetime, dump_decimal, load_datetime, load_decimal
+from opaca.wheel.models import WheelAction, WheelApprovalBinding, WheelShareLot
 
 
 class WheelPersistenceError(RuntimeError):
@@ -102,7 +102,14 @@ _SCHEMA_STATEMENTS = (
     CREATE TABLE IF NOT EXISTS wheel_approvals (
         approval_id TEXT PRIMARY KEY,
         decision_run_id TEXT NOT NULL,
-        expires_at TEXT NOT NULL
+        expires_at TEXT NOT NULL,
+        attempt_number INTEGER,
+        occ_symbol TEXT,
+        action TEXT,
+        contracts INTEGER,
+        assignment_capital TEXT,
+        approved_sell_limit_premium TEXT,
+        approved_at TEXT
     )
     """,
     """
@@ -160,6 +167,16 @@ class WheelStore:
                 "market_value",
                 "TEXT NOT NULL DEFAULT '0'",
             )
+            for column, definition in (
+                ("attempt_number", "INTEGER"),
+                ("occ_symbol", "TEXT"),
+                ("action", "TEXT"),
+                ("contracts", "INTEGER"),
+                ("assignment_capital", "TEXT"),
+                ("approved_sell_limit_premium", "TEXT"),
+                ("approved_at", "TEXT"),
+            ):
+                self._ensure_column(connection, "wheel_approvals", column, definition)
 
     def close(self) -> None:
         self._conn.close()
@@ -395,6 +412,75 @@ class WheelStore:
             )
             for row in rows
         ]
+
+    def persist_approval(self, binding: WheelApprovalBinding) -> None:
+        """Persist one exact five-minute approval binding, keyed by run id."""
+        if binding.expires_at - binding.approved_at != timedelta(minutes=5):
+            raise WheelPersistenceError("Wheel approval TTL must be exactly five minutes")
+        with self.begin_immediate() as connection:
+            connection.execute(
+                "INSERT INTO wheel_approvals "
+                "(approval_id, decision_run_id, expires_at, attempt_number, "
+                "occ_symbol, action, contracts, "
+                "assignment_capital, approved_sell_limit_premium, approved_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(approval_id) DO UPDATE SET "
+                "decision_run_id = excluded.decision_run_id, expires_at = excluded.expires_at, "
+                "attempt_number = excluded.attempt_number, "
+                "occ_symbol = excluded.occ_symbol, action = excluded.action, "
+                "contracts = excluded.contracts, assignment_capital = excluded.assignment_capital, "
+                "approved_sell_limit_premium = excluded.approved_sell_limit_premium, "
+                "approved_at = excluded.approved_at",
+                (
+                    binding.wheel_decision_run_id,
+                    binding.wheel_decision_run_id,
+                    dump_datetime(binding.expires_at),
+                    binding.attempt_number,
+                    binding.occ_symbol,
+                    binding.action.value,
+                    binding.contracts,
+                    dump_decimal(binding.assignment_capital),
+                    dump_decimal(binding.approved_sell_limit_premium),
+                    dump_datetime(binding.approved_at),
+                ),
+            )
+
+    def load_approval(self, approval_id: str) -> WheelApprovalBinding | None:
+        """Load the complete persisted approval binding, if present."""
+        row = self._conn.execute(
+                "SELECT decision_run_id, expires_at, occ_symbol, action, contracts, "
+            "assignment_capital, approved_sell_limit_premium, approved_at, attempt_number "
+            "FROM wheel_approvals WHERE approval_id = ?",
+            (approval_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        required = (
+            "attempt_number",
+            "occ_symbol",
+            "action",
+            "contracts",
+            "assignment_capital",
+            "approved_sell_limit_premium",
+            "approved_at",
+        )
+        if any(row[column] is None for column in required):
+            raise WheelPersistenceError("incomplete Wheel approval binding")
+        try:
+            action = WheelAction(str(row["action"]))
+        except ValueError as exc:
+            raise WheelPersistenceError("invalid Wheel approval action") from exc
+        return WheelApprovalBinding(
+            wheel_decision_run_id=str(row["decision_run_id"]),
+            attempt_number=int(row["attempt_number"]),
+            occ_symbol=str(row["occ_symbol"]),
+            action=action,
+            contracts=int(row["contracts"]),
+            assignment_capital=load_decimal(str(row["assignment_capital"])),
+            approved_sell_limit_premium=load_decimal(str(row["approved_sell_limit_premium"])),
+            approved_at=load_datetime(str(row["approved_at"])),
+            expires_at=load_datetime(str(row["expires_at"])),
+        )
 
     @staticmethod
     def _meta_value(connection: sqlite3.Connection, key: str) -> str | None:
