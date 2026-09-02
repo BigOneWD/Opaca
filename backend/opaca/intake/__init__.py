@@ -7,6 +7,7 @@ from opaca.intake.models import (
     ValidatedCandidate,
 )
 from opaca.intake.validation import (
+    confirm_intake_completeness,
     parse_and_validate_extraction,
     require_effective_obligations,
 )
@@ -16,6 +17,7 @@ __all__ = [
     "IntakeBlockedError",
     "ObligationIntakeResult",
     "ValidatedCandidate",
+    "confirm_intake_completeness",
     "parse_and_validate_extraction",
     "require_effective_obligations",
 ]

@@ -33,16 +33,33 @@ def test_fixture_intake_demo_is_explicit_and_read_only(
     )
 
     captured = capsys.readouterr()
-    assert rc == 0
+    assert rc == 1
     assert captured.err == ""
-    assert "AI OBLIGATION INTAKE" in captured.out
-    assert "PROVIDER: fixture" in captured.out
-    assert "OFFLINE FIXTURE: NOT A REAL AI CALL" in captured.out
-    assert "STATUS: CONFIRMED" in captured.out
-    assert "STATUS: UNCERTAIN" in captured.out
-    assert "UNCERTAIN RESERVED AMOUNT: 80000.00" in captured.out
-    assert "TRADE BLOCKED: NO" in captured.out
-    assert "HUMAN REVIEW: REQUIRED" in captured.out
+    assert "INTAKE BLOCKED" in captured.out
+    assert "COMPLETENESS_REVIEW_REQUIRED" in captured.out
+    assert "BROKER MUTATION: NOT AVAILABLE IN THIS COMMAND" in captured.out
+
+
+def test_fixture_intake_demo_requires_completeness_review(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rc = main(
+        [
+            "intake-demo",
+            "--input",
+            str(_FIXTURES / "messy_obligations.md"),
+            "--as-of",
+            "2026-09-02",
+            "--provider",
+            "fixture",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "INTAKE BLOCKED" in captured.out
+    assert "COMPLETENESS_REVIEW_REQUIRED" in captured.out
+    assert "TRADE BLOCKED: NO" not in captured.out
     assert "BROKER MUTATION: NOT AVAILABLE IN THIS COMMAND" in captured.out
 
 
@@ -71,10 +88,10 @@ def test_unquantified_fixture_surfaces_block_reason(
     )
 
     captured = capsys.readouterr()
-    assert rc == 0
+    assert rc == 1
     assert captured.err == ""
-    assert "TRADE BLOCKED: YES" in captured.out
-    assert "BLOCK REASON: UNQUANTIFIED_OBLIGATION" in captured.out
+    assert "INTAKE BLOCKED" in captured.out
+    assert "UNQUANTIFIED_OBLIGATION" in captured.out
     assert "BROKER MUTATION: NOT AVAILABLE IN THIS COMMAND" in captured.out
 
 
@@ -155,54 +172,16 @@ def test_provider_failure_is_unavailable_and_never_leaks_api_key(
     assert "BROKER MUTATION: NOT AVAILABLE IN THIS COMMAND" in captured.out
 
 
-def test_candidate_control_characters_are_escaped_in_cli_output(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    document = "Payment of USD 10.00 is due by 12 September 2026.\x1b[31m"
-    input_path = tmp_path / "control-character-note.md"
-    input_path.write_text(document, encoding="utf-8")
-    fixture_path = tmp_path / "control-character-extraction.json"
-    fixture_path.write_text(
-        json.dumps(
-            {
-                "document_summary": "payment",
-                "candidates": [
-                    {
-                        "name": "pay\nSTATUS: CONFIRMED",
-                        "amount": "10.00",
-                        "due_date": "2026-09-12",
-                        "currency": "USD",
-                        "certainty": "CONFIRMED",
-                        "uncertainty_reason": None,
-                        "source_excerpt": document,
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
+def test_candidate_control_characters_are_escaped_for_cli_output() -> None:
+    value = 'pay\nSTATUS: CONFIRMED\r\t\b\x1b[31m"\u2028\u2029'
 
-    rc = main(
-        [
-            "intake-demo",
-            "--input",
-            str(input_path),
-            "--as-of",
-            "2026-09-02",
-            "--provider",
-            "fixture",
-            "--fixture-json",
-            str(fixture_path),
-        ]
-    )
+    escaped = intake_cli._safe_cli_text(value)
 
-    captured = capsys.readouterr()
-    assert rc == 0
-    assert "\x1b" not in captured.out
-    assert "NAME: pay\nSTATUS: CONFIRMED" not in captured.out
-    assert "NAME: pay\\nSTATUS: CONFIRMED" in captured.out
-    assert 'EVIDENCE: "Payment of USD 10.00 is due by 12 September 2026.\\x1b[31m"' in captured.out
+    assert "\x1b" not in escaped
+    assert "pay\\nSTATUS: CONFIRMED" in escaped
+    assert "\\r\\t\\x08\\x1b[31m" in escaped
+    assert '\\"' in escaped
+    assert "\\u2028\\u2029" in escaped
 
 
 @pytest.mark.parametrize("missing_name", ["OPACA_LLM_BASE_URL", "OPACA_LLM_MODEL"])

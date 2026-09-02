@@ -7,6 +7,7 @@ import pytest
 from opaca.domain.models import BrokerCashState
 from opaca.intake import (
     IntakeBlockedError,
+    confirm_intake_completeness,
     parse_and_validate_extraction,
     require_effective_obligations,
 )
@@ -53,7 +54,8 @@ def test_confirmed_and_uncertain_obligations_reduce_investable_cash() -> None:
     }"""
 
     intake = parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
-    obligations = require_effective_obligations(intake)
+    reviewed_intake = confirm_intake_completeness(intake, reviewer_id="treasury-reviewer")
+    obligations = require_effective_obligations(reviewed_intake)
     projection = compute_liquidity(
         broker=_broker(Decimal("1000000")),
         obligations=obligations,

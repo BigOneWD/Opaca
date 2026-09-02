@@ -3,7 +3,13 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
-from opaca.intake import Certainty, IntakeBlockedError, parse_and_validate_extraction
+from opaca.intake import (
+    Certainty,
+    IntakeBlockedError,
+    confirm_intake_completeness,
+    parse_and_validate_extraction,
+    require_effective_obligations,
+)
 
 
 def test_confirmed_candidate_becomes_domain_obligation() -> None:
@@ -31,7 +37,8 @@ def test_confirmed_candidate_becomes_domain_obligation() -> None:
     assert candidate.stated_due_date == date(2026, 9, 12)
     assert candidate.effective_due_date == date(2026, 9, 12)
     assert candidate.reserved_conservatively is False
-    assert result.effective_obligations[0].amount == Decimal("240000.00")
+    reviewed = confirm_intake_completeness(result, reviewer_id="test-reviewer")
+    assert reviewed.effective_obligations[0].amount == Decimal("240000.00")
 
 
 def test_uncertain_known_amount_is_reserved_immediately() -> None:
@@ -58,8 +65,9 @@ def test_uncertain_known_amount_is_reserved_immediately() -> None:
     assert candidate.effective_due_date == date(2026, 9, 2)
     assert candidate.reserved_conservatively is True
     assert result.uncertain_reserved_amount == Decimal("80000.00")
-    assert result.effective_obligations[0].amount == Decimal("80000.00")
-    assert result.effective_obligations[0].due_date == date(2026, 9, 2)
+    reviewed = confirm_intake_completeness(result, reviewer_id="test-reviewer")
+    assert reviewed.effective_obligations[0].amount == Decimal("80000.00")
+    assert reviewed.effective_obligations[0].due_date == date(2026, 9, 2)
     assert result.trade_blocked is False
 
 
@@ -466,3 +474,132 @@ def test_duplicate_normalized_candidate_is_rejected() -> None:
 
     with pytest.raises(IntakeBlockedError, match="duplicate"):
         parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+
+def test_unreviewed_partial_extraction_cannot_be_handed_off() -> None:
+    document = (
+        "Principal invoice total: USD 1,000.00 is due by 2026-09-12. "
+        "Filing fee: USD 10.00 is due by 2026-09-12."
+    )
+    raw = json.dumps(
+        {
+            "document_summary": "Filing fee only",
+            "candidates": [
+                {
+                    "name": "Filing fee",
+                    "amount": "10.00",
+                    "due_date": "2026-09-12",
+                    "currency": "USD",
+                    "certainty": "CONFIRMED",
+                    "uncertainty_reason": None,
+                    "source_excerpt": "Filing fee: USD 10.00 is due by 2026-09-12.",
+                }
+            ],
+        }
+    )
+
+    result = parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+    with pytest.raises(IntakeBlockedError, match="COMPLETENESS_REVIEW_REQUIRED"):
+        require_effective_obligations(result)
+
+
+def test_even_valid_complete_extraction_requires_explicit_completeness_review() -> None:
+    document = "Payment of USD 10.00 is due by 12 September 2026."
+    raw = json.dumps(
+        {
+            "document_summary": "payment",
+            "candidates": [
+                {
+                    "name": "payment",
+                    "amount": "10.00",
+                    "due_date": "2026-09-12",
+                    "currency": "USD",
+                    "certainty": "CONFIRMED",
+                    "uncertainty_reason": None,
+                    "source_excerpt": document,
+                }
+            ],
+        }
+    )
+
+    result = parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+    with pytest.raises(IntakeBlockedError, match="COMPLETENESS_REVIEW_REQUIRED"):
+        _ = result.effective_obligations
+
+
+def test_explicit_completeness_review_allows_safe_handoff_without_changing_extraction() -> None:
+    document = "Payment of USD 10.00 is due by 12 September 2026."
+    raw = json.dumps(
+        {
+            "document_summary": "payment",
+            "candidates": [
+                {
+                    "name": "payment",
+                    "amount": "10.00",
+                    "due_date": "2026-09-12",
+                    "currency": "USD",
+                    "certainty": "CONFIRMED",
+                    "uncertainty_reason": None,
+                    "source_excerpt": document,
+                }
+            ],
+        }
+    )
+    result = parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+    reviewed = confirm_intake_completeness(result, reviewer_id="treasury-reviewer")
+
+    assert reviewed.completeness_reviewed is True
+    assert reviewed.completeness_reviewer_id == "treasury-reviewer"
+    assert reviewed.candidates == result.candidates
+    assert reviewed.effective_obligations == result._effective_obligations
+
+
+def test_blocked_intake_cannot_be_approved_for_completeness() -> None:
+    document = "A regulatory payment is due this month; amount pending assessment."
+    raw = json.dumps(
+        {
+            "document_summary": "Regulatory payment",
+            "candidates": [
+                {
+                    "name": "Regulatory payment",
+                    "amount": None,
+                    "due_date": None,
+                    "currency": "USD",
+                    "certainty": "UNCERTAIN",
+                    "uncertainty_reason": "Amount and exact date are not stated",
+                    "source_excerpt": document,
+                }
+            ],
+        }
+    )
+    result = parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+    with pytest.raises(IntakeBlockedError, match="UNQUANTIFIED_OBLIGATION"):
+        confirm_intake_completeness(result, reviewer_id="treasury-reviewer")
+
+
+def test_completeness_review_requires_non_empty_reviewer_id() -> None:
+    document = "Payment of USD 10.00 is due by 12 September 2026."
+    raw = json.dumps(
+        {
+            "document_summary": "payment",
+            "candidates": [
+                {
+                    "name": "payment",
+                    "amount": "10.00",
+                    "due_date": "2026-09-12",
+                    "currency": "USD",
+                    "certainty": "CONFIRMED",
+                    "uncertainty_reason": None,
+                    "source_excerpt": document,
+                }
+            ],
+        }
+    )
+    result = parse_and_validate_extraction(document, raw, as_of=date(2026, 9, 2))
+
+    with pytest.raises(IntakeBlockedError, match="reviewer_id"):
+        confirm_intake_completeness(result, reviewer_id=" ")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import cast
@@ -324,3 +325,21 @@ def parse_and_validate_extraction(
 
 def require_effective_obligations(result: ObligationIntakeResult) -> tuple[Obligation, ...]:
     return result.effective_obligations
+
+
+def confirm_intake_completeness(
+    result: ObligationIntakeResult,
+    *,
+    reviewer_id: str,
+) -> ObligationIntakeResult:
+    """Explicitly release a safe extraction after human completeness review."""
+    if not isinstance(reviewer_id, str) or not reviewer_id.strip():
+        raise IntakeBlockedError("reviewer_id must be non-empty")
+    if result.trade_blocked:
+        reasons = ", ".join(result.block_reasons)
+        raise IntakeBlockedError(f"intake blocked: {reasons}")
+    return replace(
+        result,
+        completeness_reviewed=True,
+        completeness_reviewer_id=reviewer_id.strip(),
+    )

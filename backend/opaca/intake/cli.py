@@ -16,7 +16,7 @@ from opaca.intake.provider import (
     ObligationExtractor,
     OpenAICompatibleObligationExtractor,
 )
-from opaca.intake.validation import parse_and_validate_extraction
+from opaca.intake.validation import parse_and_validate_extraction, require_effective_obligations
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -84,6 +84,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         result = parse_and_validate_extraction(document, raw_json, as_of=as_of)
+        require_effective_obligations(result)
     except IntakeBlockedError as exc:
         sys.stdout.write("INTAKE BLOCKED\n")
         sys.stdout.write(f"BLOCK REASON: {exc}\n")

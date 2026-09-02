@@ -49,10 +49,14 @@ class ObligationIntakeResult:
     uncertain_reserved_amount: Decimal
     trade_blocked: bool
     block_reasons: tuple[str, ...]
+    completeness_reviewed: bool = False
+    completeness_reviewer_id: str | None = None
 
     @property
     def effective_obligations(self) -> tuple[Obligation, ...]:
         if self.trade_blocked:
             reasons = ", ".join(self.block_reasons)
             raise IntakeBlockedError(f"intake blocked: {reasons}")
+        if not self.completeness_reviewed:
+            raise IntakeBlockedError("intake blocked: COMPLETENESS_REVIEW_REQUIRED")
         return self._effective_obligations
