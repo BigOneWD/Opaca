@@ -4,7 +4,6 @@ from typing import Any
 from urllib.request import Request
 
 import pytest
-
 from opaca.intake.provider import (
     ExtractionUnavailableError,
     FixtureObligationExtractor,
@@ -117,7 +116,9 @@ def test_openai_compatible_provider_builds_fixed_request_and_returns_json() -> N
     assert opener.request.full_url == "http://127.0.0.1:8080/v1/chat/completions"
     assert opener.timeout == 30.0
 
-    body: dict[str, Any] = json.loads(opener.request.data or b"{}")
+    request_data = opener.request.data
+    assert isinstance(request_data, bytes)
+    body: dict[str, Any] = json.loads(request_data)
     assert body["model"] == "local-model"
     assert body["temperature"] == 0
     assert body["messages"][0]["role"] == "system"
