@@ -1,3 +1,4 @@
+import ast
 import inspect
 import json
 from datetime import date
@@ -36,6 +37,7 @@ def test_fixture_intake_demo_is_explicit_and_read_only(
     assert captured.err == ""
     assert "AI OBLIGATION INTAKE" in captured.out
     assert "PROVIDER: fixture" in captured.out
+    assert "OFFLINE FIXTURE: NOT A REAL AI CALL" in captured.out
     assert "STATUS: CONFIRMED" in captured.out
     assert "STATUS: UNCERTAIN" in captured.out
     assert "UNCERTAIN RESERVED AMOUNT: 80000.00" in captured.out
@@ -166,13 +168,32 @@ def test_intake_help_discloses_document_delivery_for_non_local_endpoints(
     assert "supplied document" in help_text
 
 
-def test_intake_demo_source_has_no_broker_mutation_gateway() -> None:
-    source = inspect.getsource(intake_cli)
-    forbidden = (
+def test_intake_demo_ast_has_no_broker_mutation_gateway() -> None:
+    tree = ast.parse(inspect.getsource(intake_cli))
+    forbidden_modules = {
+        "opaca.broker.mutation",
+        "opaca.execution.gateway",
+        "opaca.execution.service",
+    }
+    forbidden_symbols = {
         "TradingClient",
         "submit_order",
         "cancel_order",
-        "live-paper-mutation",
         "PaperMutation",
-    )
-    assert all(token not in source for token in forbidden)
+    }
+
+    imported_modules: set[str] = set()
+    referenced_symbols: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            imported_modules.add(node.module)
+            referenced_symbols.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.Name):
+            referenced_symbols.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            referenced_symbols.add(node.attr)
+
+    assert imported_modules.isdisjoint(forbidden_modules)
+    assert referenced_symbols.isdisjoint(forbidden_symbols)
