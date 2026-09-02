@@ -154,6 +154,7 @@ class OpenAICompatibleObligationExtractor:
         if len(document) > MAX_DOCUMENT_CHARS:
             raise ExtractionUnavailableError("document exceeds 50000 character limit")
 
+        transport_failed = False
         try:
             body = {
                 "model": self.model,
@@ -184,6 +185,9 @@ class OpenAICompatibleObligationExtractor:
         except ExtractionUnavailableError:
             raise
         except (TimeoutError, OSError, HTTPException, ValueError, TypeError):
+            transport_failed = True
+
+        if transport_failed:
             raise ExtractionUnavailableError("provider transport unavailable") from None
 
         payload = _parse_response_payload(raw_body)

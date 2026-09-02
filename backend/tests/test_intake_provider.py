@@ -270,6 +270,23 @@ def test_provider_traceback_never_leaks_api_key_from_exception_cause() -> None:
     assert secret not in formatted
 
 
+def test_provider_exception_context_never_leaks_api_key() -> None:
+    secret = "super-secret"
+    opener = RaisingUrlOpen(ValueError(f"Invalid header value b'Bearer {secret}'"))
+    extractor = _extractor(opener, api_key=secret)
+
+    with pytest.raises(ExtractionUnavailableError) as exc_info:
+        extractor.extract("No obligations.", as_of=date(2026, 9, 2))
+
+    error = exc_info.value
+    formatted = "".join(traceback.format_exception(exc_info.type, error, exc_info.tb))
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert secret not in str(error)
+    assert secret not in repr(error)
+    assert secret not in formatted
+
+
 def test_provider_does_not_follow_redirect_to_another_origin_with_bearer() -> None:
     source_server = HTTPServer(("127.0.0.1", 0), RedirectSourceHandler)
     target_server = HTTPServer(("127.0.0.1", 0), RedirectTargetHandler)
