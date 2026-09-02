@@ -41,6 +41,11 @@ def _format_date(value: date | None) -> str:
     return "n/a" if value is None else value.isoformat()
 
 
+def _safe_cli_text(value: str) -> str:
+    """Encode untrusted text so it cannot add lines or terminal controls."""
+    return value.encode("unicode_escape").decode("ascii").replace('"', '\\"')
+
+
 def _extractor(provider: str, input_path: Path, fixture_json: Path | None) -> ObligationExtractor:
     if provider == "fixture":
         fixture_path = fixture_json or input_path.with_name("fixture_extraction.json")
@@ -94,7 +99,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     for index, candidate in enumerate(result.candidates, start=1):
         out.write(f"\nCANDIDATE {index}\n")
         out.write(f"STATUS: {candidate.certainty.value}\n")
-        out.write(f"NAME: {candidate.name}\n")
+        out.write(f"NAME: {_safe_cli_text(candidate.name)}\n")
         out.write(f"AMOUNT: {candidate.amount if candidate.amount is not None else 'n/a'}\n")
         out.write(f"STATED DUE DATE: {_format_date(candidate.stated_due_date)}\n")
         out.write(f"EFFECTIVE DUE DATE: {_format_date(candidate.effective_due_date)}\n")
@@ -103,7 +108,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         if candidate.certainty.value == "UNCERTAIN":
             out.write("HUMAN REVIEW: REQUIRED\n")
-        out.write(f'EVIDENCE: "{candidate.source_excerpt}"\n')
+        out.write(f'EVIDENCE: "{_safe_cli_text(candidate.source_excerpt)}"\n')
 
     out.write(f"\nUNCERTAIN RESERVED AMOUNT: {result.uncertain_reserved_amount}\n")
     out.write(f"TRADE BLOCKED: {'YES' if result.trade_blocked else 'NO'}\n")

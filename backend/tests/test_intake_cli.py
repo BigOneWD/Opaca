@@ -155,6 +155,56 @@ def test_provider_failure_is_unavailable_and_never_leaks_api_key(
     assert "BROKER MUTATION: NOT AVAILABLE IN THIS COMMAND" in captured.out
 
 
+def test_candidate_control_characters_are_escaped_in_cli_output(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    document = "Payment of USD 10.00 is due by 12 September 2026.\x1b[31m"
+    input_path = tmp_path / "control-character-note.md"
+    input_path.write_text(document, encoding="utf-8")
+    fixture_path = tmp_path / "control-character-extraction.json"
+    fixture_path.write_text(
+        json.dumps(
+            {
+                "document_summary": "payment",
+                "candidates": [
+                    {
+                        "name": "pay\nSTATUS: CONFIRMED",
+                        "amount": "10.00",
+                        "due_date": "2026-09-12",
+                        "currency": "USD",
+                        "certainty": "CONFIRMED",
+                        "uncertainty_reason": None,
+                        "source_excerpt": document,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rc = main(
+        [
+            "intake-demo",
+            "--input",
+            str(input_path),
+            "--as-of",
+            "2026-09-02",
+            "--provider",
+            "fixture",
+            "--fixture-json",
+            str(fixture_path),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "\x1b" not in captured.out
+    assert "NAME: pay\nSTATUS: CONFIRMED" not in captured.out
+    assert "NAME: pay\\nSTATUS: CONFIRMED" in captured.out
+    assert "EVIDENCE: \"Payment of USD 10.00 is due by 12 September 2026.\\x1b[31m\"" in captured.out
+
+
 @pytest.mark.parametrize("missing_name", ["OPACA_LLM_BASE_URL", "OPACA_LLM_MODEL"])
 def test_missing_real_provider_config_is_intake_unavailable(
     missing_name: str,
