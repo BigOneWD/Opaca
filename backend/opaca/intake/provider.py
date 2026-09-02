@@ -12,6 +12,11 @@ _SYSTEM_PROMPT = """You extract corporate cash obligations from supplied text.
 Return exactly one JSON object with document_summary and candidates. Do not make
 trading decisions, authorize orders, or invent missing obligation facts.
 """
+_MAX_DOCUMENT_CHARS = 50_000
+
+
+class ExtractionUnavailableError(RuntimeError):
+    """Raised when obligation extraction cannot produce a usable raw response."""
 
 
 class _ResponseLike(Protocol):
@@ -32,6 +37,36 @@ def _urlopen(request: Request, *, timeout: float) -> _ResponseLike:
     return cast(_ResponseLike, urlopen(request, timeout=timeout))
 
 
+def _parse_response_payload(raw_body: bytes) -> dict[str, object]:
+    try:
+        decoded_text = raw_body.decode("utf-8")
+        payload = json.loads(decoded_text)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ExtractionUnavailableError("provider returned malformed JSON") from exc
+
+    if not isinstance(payload, dict):
+        raise ExtractionUnavailableError("provider response must be a JSON object")
+    return cast(dict[str, object], payload)
+
+
+def _assistant_content(payload: dict[str, object]) -> str:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise ExtractionUnavailableError("provider response missing choices")
+    first = choices[0]
+    if not isinstance(first, dict):
+        raise ExtractionUnavailableError("provider response choice is invalid")
+    first_object = cast(dict[str, object], first)
+    message = first_object.get("message")
+    if not isinstance(message, dict):
+        raise ExtractionUnavailableError("provider response missing message")
+    message_object = cast(dict[str, object], message)
+    content = message_object.get("content")
+    if not isinstance(content, str):
+        raise ExtractionUnavailableError("provider response missing assistant content")
+    return content
+
+
 @dataclass(frozen=True)
 class OpenAICompatibleObligationExtractor:
     """Extract raw obligation JSON from an OpenAI-compatible chat endpoint."""
@@ -43,6 +78,9 @@ class OpenAICompatibleObligationExtractor:
     provider_name: str = "openai-compatible"
 
     def extract(self, document: str, *, as_of: date) -> str:
+        if len(document) > _MAX_DOCUMENT_CHARS:
+            raise ExtractionUnavailableError("document exceeds 50000 character limit")
+
         body = {
             "model": self.model,
             "temperature": 0,
@@ -63,24 +101,16 @@ class OpenAICompatibleObligationExtractor:
             headers=headers,
             method="POST",
         )
-        with self.opener(request, timeout=30.0) as response:
-            payload = json.loads(response.read().decode("utf-8"))
 
-        if not isinstance(payload, dict):
-            raise ValueError("provider response must be a JSON object")
-        response_object = cast(dict[str, object], payload)
-        choices = response_object.get("choices")
-        if not isinstance(choices, list) or not choices:
-            raise ValueError("provider response missing choices")
-        first = choices[0]
-        if not isinstance(first, dict):
-            raise ValueError("provider response choice is invalid")
-        first_object = cast(dict[str, object], first)
-        message = first_object.get("message")
-        if not isinstance(message, dict):
-            raise ValueError("provider response missing message")
-        message_object = cast(dict[str, object], message)
-        content = message_object.get("content")
-        if not isinstance(content, str):
-            raise ValueError("provider response missing assistant content")
-        return content
+        try:
+            with self.opener(request, timeout=30.0) as response:
+                if response.status < 200 or response.status >= 300:
+                    raise ExtractionUnavailableError("provider returned non-success status")
+                raw_body = response.read()
+        except ExtractionUnavailableError:
+            raise
+        except (TimeoutError, OSError) as exc:
+            raise ExtractionUnavailableError("provider transport unavailable") from exc
+
+        payload = _parse_response_payload(raw_body)
+        return _assistant_content(payload)
