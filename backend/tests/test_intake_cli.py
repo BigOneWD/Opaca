@@ -4,7 +4,6 @@ from datetime import date
 from pathlib import Path
 
 import pytest
-
 from opaca.__main__ import main
 from opaca.intake import cli as intake_cli
 from opaca.intake.provider import (
@@ -15,7 +14,9 @@ from opaca.intake.provider import (
 _FIXTURES = Path(__file__).parent / "fixtures" / "intake"
 
 
-def test_fixture_intake_demo_is_explicit_and_read_only(capsys) -> None:
+def test_fixture_intake_demo_is_explicit_and_read_only(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     input_path = _FIXTURES / "messy_obligations.md"
 
     rc = main(
@@ -43,7 +44,10 @@ def test_fixture_intake_demo_is_explicit_and_read_only(capsys) -> None:
     assert "BROKER MUTATION: NOT AVAILABLE IN THIS COMMAND" in captured.out
 
 
-def test_unquantified_fixture_surfaces_block_reason(tmp_path: Path, capsys) -> None:
+def test_unquantified_fixture_surfaces_block_reason(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     input_path = tmp_path / "unquantified_obligation.md"
     input_path.write_text(
         "A regulatory payment is due this month; amount pending assessment.\n",
@@ -72,7 +76,10 @@ def test_unquantified_fixture_surfaces_block_reason(tmp_path: Path, capsys) -> N
     assert "BROKER MUTATION: NOT AVAILABLE IN THIS COMMAND" in captured.out
 
 
-def test_evidence_mismatch_becomes_intake_blocked(tmp_path: Path, capsys) -> None:
+def test_evidence_mismatch_becomes_intake_blocked(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     input_path = _FIXTURES / "messy_obligations.md"
     payload = json.loads((_FIXTURES / "fixture_extraction.json").read_text(encoding="utf-8"))
     payload["candidates"][0]["source_excerpt"] = "This evidence is not in the source document."
@@ -105,7 +112,7 @@ def test_evidence_mismatch_becomes_intake_blocked(tmp_path: Path, capsys) -> Non
 
 def test_provider_failure_is_unavailable_and_never_leaks_api_key(
     monkeypatch: pytest.MonkeyPatch,
-    capsys,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     secret = "cli-super-secret"
 
@@ -146,7 +153,9 @@ def test_provider_failure_is_unavailable_and_never_leaks_api_key(
     assert "BROKER MUTATION: NOT AVAILABLE IN THIS COMMAND" in captured.out
 
 
-def test_intake_help_discloses_document_delivery_for_non_local_endpoints(capsys) -> None:
+def test_intake_help_discloses_document_delivery_for_non_local_endpoints(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     with pytest.raises(SystemExit) as exc_info:
         main(["intake-demo", "--help"])
 
