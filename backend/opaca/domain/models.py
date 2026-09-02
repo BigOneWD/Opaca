@@ -70,6 +70,12 @@ class CheckId(StrEnum):
     CHECK_14 = "CHECK-14"
     CHECK_15 = "CHECK-15"
     CHECK_16 = "CHECK-16"
+    CHECK_17 = "CHECK-17"
+    CHECK_18 = "CHECK-18"
+    CHECK_19 = "CHECK-19"
+    CHECK_20 = "CHECK-20"
+    CHECK_21 = "CHECK-21"
+    CHECK_22 = "CHECK-22"
 
 
 class OrderState(StrEnum):
