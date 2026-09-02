@@ -153,8 +153,8 @@ class OpenAICompatibleObligationExtractor:
                 raw_body = response.read()
         except ExtractionUnavailableError:
             raise
-        except (TimeoutError, OSError) as exc:
-            raise ExtractionUnavailableError("provider transport unavailable") from exc
+        except (TimeoutError, OSError):
+            raise ExtractionUnavailableError("provider transport unavailable") from None
 
         payload = _parse_response_payload(raw_body)
         return _assistant_content(payload)
