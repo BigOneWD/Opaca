@@ -81,6 +81,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     out = sys.stdout
     out.write("AI OBLIGATION INTAKE\n")
     out.write(f"PROVIDER: {extractor.provider_name}\n")
+    if extractor.provider_name == "fixture":
+        out.write("OFFLINE FIXTURE: NOT A REAL AI CALL\n")
     out.write(f"SOURCE SHA256: {result.source_sha256}\n")
 
     for index, candidate in enumerate(result.candidates, start=1):
