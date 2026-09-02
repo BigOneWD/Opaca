@@ -65,6 +65,7 @@ class WheelAuditEvent:
 _ACCOUNT_FINGERPRINT_KEY = "account_fingerprint"
 _RISK_CAPITAL_BASE_KEY = "risk_capital_base"
 _ACCOUNT_BOUND_AT_KEY = "account_bound_at"
+_SNAPSHOT_VERSION_KEY = "snapshot_version"
 
 _SCHEMA_STATEMENTS = (
     """
@@ -95,7 +96,11 @@ _SCHEMA_STATEMENTS = (
     CREATE TABLE IF NOT EXISTS wheel_orders (
         client_order_id TEXT PRIMARY KEY,
         occ_symbol TEXT NOT NULL,
-        status TEXT NOT NULL
+        status TEXT NOT NULL,
+        reservation_id TEXT,
+        assignment_capital TEXT,
+        snapshot_version TEXT,
+        created_at TEXT
     )
     """,
     """
@@ -167,6 +172,13 @@ class WheelStore:
                 "market_value",
                 "TEXT NOT NULL DEFAULT '0'",
             )
+            for column, definition in (
+                ("reservation_id", "TEXT"),
+                ("assignment_capital", "TEXT"),
+                ("snapshot_version", "TEXT"),
+                ("created_at", "TEXT"),
+            ):
+                self._ensure_column(connection, "wheel_orders", column, definition)
             for column, definition in (
                 ("attempt_number", "INTEGER"),
                 ("occ_symbol", "TEXT"),
@@ -251,6 +263,21 @@ class WheelStore:
         if stored_capital is None:
             raise WheelPersistenceError("Wheel risk capital is not initialized")
         return load_decimal(stored_capital)
+
+    def set_snapshot_version(self, version: str) -> None:
+        """Persist the reconciliation snapshot version used by final checks."""
+        if not isinstance(version, str) or not version.strip():
+            raise ValueError("snapshot version must be non-empty")
+        with self.begin_immediate() as connection:
+            connection.execute(
+                "INSERT INTO wheel_meta(key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (_SNAPSHOT_VERSION_KEY, version),
+            )
+
+    def snapshot_version(self) -> str | None:
+        """Return the latest persisted reconciliation snapshot version."""
+        return self._meta_value(self._conn, _SNAPSHOT_VERSION_KEY)
 
     def active_assignment_reservations(self) -> list[WheelReservation]:
         """Return active assignment reservations from this Wheel database."""
