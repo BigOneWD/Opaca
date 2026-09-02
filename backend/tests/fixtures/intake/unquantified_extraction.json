@@ -1,0 +1,14 @@
+{
+  "document_summary": "Possible regulatory payment with amount pending assessment",
+  "candidates": [
+    {
+      "name": "Regulatory payment",
+      "amount": null,
+      "due_date": null,
+      "currency": "USD",
+      "certainty": "UNCERTAIN",
+      "uncertainty_reason": "Amount and exact due date are not stated",
+      "source_excerpt": "A regulatory payment is due this month; amount pending assessment."
+    }
+  ]
+}
