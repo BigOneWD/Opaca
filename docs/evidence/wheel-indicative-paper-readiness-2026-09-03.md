@@ -81,3 +81,27 @@ PAPER order only if `is_open=true` and every other cleanup precondition still
 passes. Do not start the CSP before human review.
 
 `REAL OPTION ORDERS SUBMITTED = NONE`
+
+## Market-hours continuation attempt
+
+Fresh continuation precheck on 2026-09-03:
+
+- repository worktree: clean before this evidence update
+- `git diff --check`: clean
+- full `pytest -q`: exit 0; `852 passed, 3 skipped`
+- PAPER endpoint exact match: YES
+- broker clock: `2026-09-02T22:04:36.843526-04:00`
+- regular market open: `NO`
+- next regular open: `2026-09-03T09:30:00-04:00`
+- SGOV before: exactly `1` long share
+- open SGOV orders: `0`
+- cleanup submit attempts: `0`
+- cleanup result: `SGOV_CLEANUP = WAITING_FOR_REGULAR_MARKET_OPEN`
+- SGOV after: unchanged, exactly `1` long share
+- clean reconciliation, Wheel bootstrap, fresh indicative discovery, and dry
+  CSP plan: `NOT REACHED`
+- `PAPER_MUTATION_READY`: `NO` for this run
+- real option orders submitted: `NONE`
+
+The regular-session gate failed again. No overnight, extended-hours, or other
+broker action was taken.
