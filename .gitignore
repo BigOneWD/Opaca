@@ -8,11 +8,15 @@ venv/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+node_modules/
+dist/
+*.tsbuildinfo
 
 # Secrets and local environment material — never commit
 .env
 .env.*
 *.env
+!.env.example
 
 # Local SQLite state — never commit
 *.sqlite

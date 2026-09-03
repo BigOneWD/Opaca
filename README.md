@@ -6,6 +6,14 @@ Opaca is an AI-assisted options **Wheel** control plane for the problem that
 usually gets skipped in trading demos: not “can the model find a trade?”, but
 “should the model be allowed to commit the account to it?”
 
+## Live Competition Dashboard
+
+[Open the public OPACA Live Competition Dashboard](https://bigonewd.github.io/Opaca/)
+
+The dashboard is a read-only public observability layer for sanitized Alpaca
+PAPER metrics and the verified XLF proof. The browser holds no broker
+credentials and has no broker mutation controls.
+
 The model proposes intent. Deterministic software owns the contract identity,
 assignment obligation, risk limits, authority decision, cash reservation,
 paper execution boundary, broker readback, and reconciliation state.

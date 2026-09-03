@@ -1,0 +1,31 @@
+{
+  "name": "opaca-live-dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -b && vite build",
+    "lint": "eslint src --max-warnings=0",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "node scripts/ui-contract-test.mjs",
+    "test:function": "tsx ../netlify/functions/metrics.test.ts",
+    "test:security": "node scripts/security-scan.mjs"
+  },
+  "dependencies": {
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.35.0",
+    "@types/react": "^19.1.10",
+    "@types/react-dom": "^19.1.7",
+    "@types/node": "^22.15.30",
+    "@vitejs/plugin-react": "^5.0.2",
+    "eslint": "^9.35.0",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.42.0",
+    "vite": "^7.1.3"
+  }
+}
