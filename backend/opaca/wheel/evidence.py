@@ -34,7 +34,9 @@ _ALLOWED_FIELDS = frozenset(
         "account_fingerprint",
         "feed",
         "software_ready",
+        "paper_mutation_ready",
         "mutation_ready",
+        "production_grade_market_data",
         "blocker",
         "dry_run",
     }
@@ -114,23 +116,35 @@ def build_readiness(
     paper: bool,
     feed: str,
     opra_available: bool,
+    indicative_available: bool = False,
 ) -> dict[str, object]:
-    """Separate local software readiness from authoritative mutation readiness."""
-    normalized_feed = feed.strip().lower()
-    mutation_ready = (
-        software_ready and paper and normalized_feed == "opra" and opra_available
-    )
+    """Separate competition-PAPER readiness from production-grade data quality."""
+    normalized_feed = feed.strip().lower() if isinstance(feed, str) else ""
+    feed_available = {
+        "opra": opra_available,
+        "indicative": indicative_available,
+    }.get(normalized_feed, False)
+    paper_mutation_ready = software_ready and paper and feed_available
+    production_grade_market_data = normalized_feed == "opra" and opra_available
     if not paper:
         blocker = "verified PAPER environment unavailable"
-    elif normalized_feed != "opra" or not opra_available:
-        blocker = "authoritative OPRA pricing unavailable"
     elif not software_ready:
         blocker = "software readiness checks failed"
+    elif normalized_feed not in {"opra", "indicative"} or not feed_available:
+        blocker = "authoritative OPRA pricing unavailable"
+    elif normalized_feed == "indicative":
+        blocker = (
+            "Alpaca INDICATIVE feed accepted for competition PAPER execution; "
+            "not presented as OPRA or production-grade market data"
+        )
     else:
         blocker = None
     return {
         "software_ready": software_ready,
-        "mutation_ready": mutation_ready,
+        "paper_mutation_ready": paper_mutation_ready,
+        # Keep the original field as a compatibility alias for existing callers.
+        "mutation_ready": paper_mutation_ready,
+        "production_grade_market_data": production_grade_market_data,
         "blocker": blocker,
         "feed": feed,
         "paper": paper,

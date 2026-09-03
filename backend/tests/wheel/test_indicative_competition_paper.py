@@ -5,9 +5,11 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
+import pytest
 from opaca.__main__ import main
-from opaca.domain.models import BrokerEnvironment, CheckId
+from opaca.domain.models import BrokerEnvironment, CheckId, PolicyDecision
 from opaca.wheel import cli
+from opaca.wheel.config import WheelPolicy
 from opaca.wheel.evidence import build_readiness, render_evidence
 from opaca.wheel.models import OptionContract, OptionQuote, OptionRight, WheelAction, WheelState
 from opaca.wheel.policy import WheelGuardEngine, WheelPolicyContext, WheelProposal
@@ -35,7 +37,7 @@ def readiness(*, feed: str, opra_available: bool = False) -> dict[str, object]:
     )
 
 
-def evaluate_indicative(quote: OptionQuote):
+def evaluate_indicative(quote: OptionQuote) -> PolicyDecision:
     proposal = WheelProposal(
         action=WheelAction.SELL_CASH_SECURED_PUT,
         contract=CONTRACT,
@@ -58,7 +60,7 @@ def evaluate_indicative(quote: OptionQuote):
         environment_verified=True,
         kill_switch_active=False,
         now=NOW,
-        policy=__import__("opaca.wheel.config", fromlist=["WheelPolicy"]).WheelPolicy(),
+        policy=WheelPolicy(),
     )
     return WheelGuardEngine().evaluate(context, proposal)
 
@@ -134,7 +136,7 @@ def test_unknown_feed_fails_closed() -> None:
 
 
 def test_indicative_paper_submit_reaches_injected_service_after_readiness(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
     monkeypatch.setenv("ALPACA_PAPER_TRADE", "true")

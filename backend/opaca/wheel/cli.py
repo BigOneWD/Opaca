@@ -60,6 +60,10 @@ def _readiness() -> dict[str, object]:
         .strip()
         .lower()
         == "true",
+        indicative_available=os.environ.get("OPACA_WHEEL_INDICATIVE_AVAILABLE", "false")
+        .strip()
+        .lower()
+        == "true",
     )
 
 
@@ -73,7 +77,10 @@ def _evidence(**fields: object) -> str:
     safe = sanitize_wheel_evidence(base)
     return (
         f"SOFTWARE_READY: {'YES' if safe['software_ready'] else 'NO'}\n"
+        f"PAPER_MUTATION_READY: {'YES' if safe['paper_mutation_ready'] else 'NO'}\n"
         f"MUTATION_READY: {'YES' if safe['mutation_ready'] else 'NO'}\n"
+        "PRODUCTION_GRADE_MARKET_DATA: "
+        f"{'YES' if safe['production_grade_market_data'] else 'NO'}\n"
         + render_evidence(safe)
     )
 
@@ -260,7 +267,7 @@ def _submit_paper(args: Sequence[str]) -> int:
         return 2
     readiness = _readiness()
     sys.stdout.write(_evidence(feed=readiness["feed"]))
-    if readiness["mutation_ready"] is not True:
+    if readiness["paper_mutation_ready"] is not True:
         return 1
     try:
         gateway = _paper_gateway_factory()
