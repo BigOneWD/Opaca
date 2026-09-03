@@ -52,6 +52,14 @@ def _persisted_text(store: WheelStore) -> str:
     return "\n".join(fragments)
 
 
+def _repo_wheel_db_fingerprint(repo_root: Path) -> tuple[bool, int | None, str | None]:
+    path = repo_root / "backend" / "opaca-wheel-paper.db"
+    if not path.exists():
+        return False, None, None
+    contents = path.read_bytes()
+    return path.is_file(), len(contents), hashlib.sha256(contents).hexdigest()
+
+
 def test_task3_public_store_types_are_exposed() -> None:
     assert all(
         item is not None
@@ -68,6 +76,8 @@ def test_task3_public_store_types_are_exposed() -> None:
 def test_fresh_wheel_store_uses_wal_and_foreign_keys_without_repo_db_writes(
     tmp_path: Path,
 ) -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    production_db_before = _repo_wheel_db_fingerprint(repo_root)
     store = _new_store(tmp_path)
     try:
         journal_mode = store._conn.execute("PRAGMA journal_mode").fetchone()[0]
@@ -78,9 +88,9 @@ def test_fresh_wheel_store_uses_wal_and_foreign_keys_without_repo_db_writes(
     finally:
         store.close()
 
-    repo_root = Path(__file__).resolve().parents[3]
     assert not (repo_root / "backend" / "opaca-paper-demo.db").exists()
-    assert not (repo_root / "backend" / "opaca-wheel-paper.db").exists()
+    production_db_after = _repo_wheel_db_fingerprint(repo_root)
+    assert production_db_after == production_db_before
     assert all(path.parent == tmp_path for path in tmp_path.rglob("*"))
 
 
