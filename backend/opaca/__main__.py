@@ -14,6 +14,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             "\n"
             "preflight    read-only PAPER checks; never submits or cancels\n"
             "intake-demo  read-only AI obligation intake; no broker mutation capability\n"
+            "wheel-probe  dry read-only Wheel readiness and MCP-surface check\n"
+            "wheel-plan   dry deterministic Wheel intent/selector/policy plan\n"
+            "wheel-reconcile  dry call to Wheel reconciliation\n"
+            "wheel-submit-paper  separately gated PAPER submission path\n"
         )
         return 0
 
@@ -26,6 +30,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from opaca.intake.cli import main as intake_demo_main
 
         return intake_demo_main(rest)
+    if command.startswith("wheel-"):
+        from opaca.wheel.cli import main as wheel_main
+
+        return wheel_main([command, *rest])
 
     sys.stderr.write(f"unknown command {command!r}; try --help\n")
     return 2
