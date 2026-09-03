@@ -18,6 +18,15 @@ def test_read_only_wheel_commands_are_available_without_network(
     assert "MUTATION_READY: NO" in output
 
 
+def test_wheel_plan_runs_dry_workflow_through_atomic_reservation(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["wheel-plan"]) == 0
+    output = capsys.readouterr().out
+    assert '"client_order_id": "wheel-' in output
+    assert '"reserved_assignment_capital": "10000"' in output
+
+
 def test_help_lists_separate_wheel_commands(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["--help"]) == 0
     output = capsys.readouterr().out
